@@ -59,6 +59,7 @@ export interface TrainingGoal {
 
 export interface HumorMaterial {
   id: string;
+  knowledgeDocumentId?: string;
   type: HumorMaterialType;
   title: string;
   content: string;
@@ -110,7 +111,8 @@ export interface KnowledgeChunk { id: string; text: string; order: number; }
 
 export interface KnowledgeDocument {
   id: string;
-  source: "local" | "feishu";
+  source: "local" | "feishu" | "inspiration";
+  sourceMaterialId?: string;
   title: string;
   mimeType: string;
   chunks: KnowledgeChunk[];

@@ -80,13 +80,24 @@ test("voice inspiration stays in composer until user sends it", async ({ page, c
   await setup(page, "今天开会我发现一个有趣的观察。");
   let organized = 0;
   page.on("request", request => { if (request.url().endsWith("/api/materials/organize")) organized++; });
-  await page.getByRole("button", { name: "灵感素材", exact: true }).click();
+  await page.getByRole("button", { name: "知识库", exact: true }).click();
+  await page.getByRole("button", { name: /灵感记录/ }).click();
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "讲述灵感素材" })).toHaveValue("今天开会我发现一个有趣的观察。");
   expect(organized).toBe(0);
   await page.getByRole("button", { name: "停止语音输入", exact: true }).click();
   await page.getByRole("button", { name: "发送并整理" }).click();
   await expect.poll(() => organized).toBe(1);
+  await page.getByTitle("编辑灵感").click();
+  await page.getByLabel("编辑灵感标题").fill("更新后的会议观察");
+  await page.getByLabel("编辑灵感内容").fill("这段修改后的灵感会同步进入知识库，并能被台本选择。");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: /文档与外部知识库/ }).click();
+  await expect(page.getByText("更新后的会议观察", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "练习", exact: true }).click();
+  await page.getByRole("button", { name: "从知识库生成", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: /更新后的会议观察/ })).toBeVisible();
+  await expect(page.getByText("灵感 · 1 个片段", { exact: true })).toBeVisible();
 });
 
 test("settings remain usable at desktop and narrow width", async ({ page }) => {

@@ -323,6 +323,12 @@ legend { color: var(--muted); font-size: 11px; font-weight: 800; padding: 0 5px;
 .chat-hint { margin: 0; color: var(--muted); padding: 0 16px 14px; font-size: 10px; }
 
 .humor-layout { display: grid; gap: 16px; }
+.knowledge-hub { display: grid; gap: 14px; }
+.knowledge-source-tabs { display: flex; gap: 6px; width: fit-content; padding: 4px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.knowledge-source-tabs button { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 0 12px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-weight: 800; }
+.knowledge-source-tabs button.active { background: #111; color: #fff; }
+.knowledge-source-tabs button span { min-width: 20px; border-radius: 99px; background: #e6e6e6; color: #333; padding: 2px 6px; font-size: 10px; }
+.knowledge-source-tabs button.active span { background: #444; color: #fff; }
 .material-sources { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .material-sources button, .material-sources label { position: relative; display: grid; grid-template-columns: 34px 1fr; grid-template-rows: auto auto; column-gap: 10px; align-items: center; min-height: 74px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); padding: 12px; text-align: left; cursor: pointer; }
 .material-sources svg { grid-row: 1 / 3; color: var(--green); }
@@ -351,12 +357,17 @@ legend { color: var(--muted); font-size: 11px; font-weight: 800; padding: 0 5px;
 .language-mini { width: 132px; }
 .library-count { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .material-list { padding-bottom: 16px; }
-.material-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin: 0 16px 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.material-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin: 0 16px 8px; border-top: 1px solid var(--line); padding-top: 12px; }
 .material-row:first-of-type { border-top: 0; }
 .material-row span, .material-row strong, .material-row small { display: block; }
 .material-row span, .material-row small { color: var(--muted); font-size: 10px; }
 .material-row strong { margin-top: 3px; font-size: 13px; }
 .material-row p { margin: 6px 0; color: #4c4c4c; font-size: 12px; line-height: 1.55; }
+.material-actions { display: flex; align-items: start; gap: 5px; }
+.material-editor { display: grid; gap: 8px; }
+.material-editor input, .material-editor textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 10px; color: var(--ink); }
+.material-editor textarea { min-height: 150px; resize: vertical; line-height: 1.6; }
+.material-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .material-core { display: block; margin-top: 7px; border-left: 2px solid var(--green); padding-left: 8px; color: #333333; font-size: 11px; font-style: normal; line-height: 1.5; }
 .material-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0; }
 .material-tags i { border: 1px solid #d1d1d1; border-radius: 4px; background: #f4f4f4; color: #4a4a4a; padding: 2px 5px; font-size: 9px; font-style: normal; }
@@ -395,7 +406,7 @@ legend { color: var(--muted); font-size: 11px; font-weight: 800; padding: 0 5px;
 .feishu-import { display: flex; gap: 8px; padding: 0 16px; }
 .helper-text { margin: 9px 16px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .document-list { display: grid; gap: 8px; padding: 0 16px; }
-.document-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) 38px; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 7px; padding: 10px; }
+.document-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 7px; padding: 10px; }
 .document-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 7px; background: #ededed; color: var(--green); }
 .document-row strong, .document-row span { display: block; }
 .document-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
@@ -468,7 +479,7 @@ legend { color: var(--muted); font-size: 11px; font-weight: 800; padding: 0 5px;
 @media (max-width: 720px) {
   .app-shell { display: block; }
   .sidebar { position: static; height: auto; }
-  .main-nav { grid-template-columns: repeat(6, 1fr); }
+  .main-nav { grid-template-columns: repeat(5, 1fr); }
   .main-nav button { justify-content: center; padding: 9px 4px; }
   .main-nav button span { display: none; }
   .main-nav button em { display: none; }

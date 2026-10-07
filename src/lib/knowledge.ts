@@ -1,8 +1,35 @@
 import MiniSearch from "minisearch";
-import type { KnowledgeChunk, KnowledgeDocument } from "./types";
+import type { HumorMaterial, KnowledgeChunk, KnowledgeDocument } from "./types";
 
 const CHUNK_SIZE = 700;
 const CHUNK_OVERLAP = 100;
+
+export function inspirationDocumentId(materialId: string): string {
+  return `inspiration:${materialId}`;
+}
+
+export function materialToKnowledgeDocument(
+  material: HumorMaterial,
+  existing?: KnowledgeDocument,
+): KnowledgeDocument {
+  const id = material.knowledgeDocumentId ?? existing?.id ?? inspirationDocumentId(material.id);
+  const text = [
+    material.title,
+    material.coreIdea ? `核心观点：${material.coreIdea}` : "",
+    material.content,
+    material.tags.length ? `标签：${material.tags.join("、")}` : "",
+  ].filter(Boolean).join("\n\n");
+  return {
+    id,
+    source: "inspiration",
+    sourceMaterialId: material.id,
+    title: material.title,
+    mimeType: "text/x-speech-coach-inspiration",
+    chunks: chunkText(text),
+    createdAt: existing?.createdAt ?? material.createdAt,
+    updatedAt: material.updatedAt,
+  };
+}
 
 export function chunkText(text: string): KnowledgeChunk[] {
   const normalized = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();

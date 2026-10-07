@@ -35,6 +35,14 @@ it("imports selected local excerpts without any API call", () => {
   expect(fetch).not.toHaveBeenCalled();
   expect(p.onSave).not.toHaveBeenCalled();
 });
+it("offers inspiration documents as script sources", () => {
+  const p = props();
+  render(<ScriptStudio {...p} initialTab="sources" documents={[{ id: "inspiration:idea", sourceMaterialId: "idea", title: "一个真实观察", chunks: [{ id: "chunk", order: 0, text: "这是从语音灵感整理出的表达。" }], source: "inspiration", mimeType: "text/x-speech-coach-inspiration", createdAt: "2026", updatedAt: "2026" }]} />);
+  expect(screen.getByText("灵感 · 1 个片段")).toBeVisible();
+  fireEvent.click(screen.getByRole("checkbox", { name: /一个真实观察/ }));
+  fireEvent.click(screen.getByRole("button", { name: "直接载入原文片段" }));
+  expect(screen.getByLabelText("编辑完整台本")).toHaveValue("这是从语音灵感整理出的表达。");
+});
 it("selects the best of three, confirms memories, and reuses them in the next draft", async () => {
   const p = props();
   const fetch = vi.fn().mockResolvedValueOnce(Response.json({ source: "ai", analysis: { summary: "这次先举例，再说结论。", changes: [{ original: scenario.script, spoken: "我想先讲一个例子。", observation: "开场更口语化。" }], habits: [{ rule: "先用一个具体例子引入观点。", evidence: "我想先讲一个例子。", kind: "keep" }] } }));

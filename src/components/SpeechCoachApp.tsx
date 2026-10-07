@@ -23,7 +23,7 @@ import { buildLocalReview, calculateDeliveryMetrics } from "@/lib/analysis";
 import { db } from "@/lib/db";
 import { buildLocalGoalPlan, createPracticeRounds, DEFAULT_PROFILE, nextRoundIndex } from "@/lib/goals";
 import { HUMOR_METHODS, HUMOR_SOURCES } from "@/lib/humor";
-import { chunkText, parseKnowledgeFile, searchKnowledge } from "@/lib/knowledge";
+import { chunkText, inspirationDocumentId, materialToKnowledgeDocument, parseKnowledgeFile, searchKnowledge } from "@/lib/knowledge";
 import { getScenario, getScenarioByKind, SCENARIOS } from "@/lib/scenarios";
 import { findSpeechProgress, progressToSection } from "@/lib/speech-follow";
 import type {
@@ -33,7 +33,7 @@ import type {
   TrainingGoal, TrainingLanguage, UserProfile, ScriptVersion, CoachMemory,
 } from "@/lib/types";
 
-type AppTab = "practice" | "goals" | "knowledge" | "humor" | "review" | "settings";
+type AppTab = "practice" | "goals" | "knowledge" | "review" | "settings";
 
 const DEFAULT_PREFERENCES: AppPreferences = {
   id: "app-preferences", cameraHeight: 420, cameraWidth: 0, cameraCollapsed: false,
@@ -44,7 +44,6 @@ const TAB_LABELS: Array<{ id: AppTab; label: string; icon: typeof Mic }> = [
   { id: "practice", label: "练习", icon: Mic },
   { id: "goals", label: "目标", icon: Target },
   { id: "knowledge", label: "知识库", icon: Library },
-  { id: "humor", label: "灵感素材", icon: Lightbulb },
   { id: "review", label: "复盘", icon: Gauge },
   { id: "settings", label: "API 配置", icon: Settings },
 ];
@@ -482,6 +481,15 @@ export function SpeechCoachApp() {
     } finally { setKnowledgeBusy(false); }
   };
 
+  const deleteKnowledgeDocument = async (id: string) => {
+    const document = await db.documents.get(id);
+    await db.transaction("rw", db.documents, db.humorMaterials, async () => {
+      await db.documents.delete(id);
+      if (document?.sourceMaterialId) await db.humorMaterials.delete(document.sourceMaterialId);
+    });
+    await reloadLocalData();
+  };
+
   const deleteSession = async (id: string) => {
     await db.sessions.delete(id);
     const next = sessions.filter((session) => session.id !== id);
@@ -580,8 +588,7 @@ export function SpeechCoachApp() {
         {activeTab === "settings" && (isPracticing ? <p role="status">本轮正在录制。结束练习后可调整服务商配置。</p> : <ApiSettings />)}
 
         {activeTab === "goals" && <GoalsView goals={goals} documents={documents} profile={profile} busy={goalBusy} setBusy={setGoalBusy} reload={reloadLocalData} chooseGoal={chooseGoal} setNotice={setNotice} />}
-        {activeTab === "knowledge" && <KnowledgeView documents={documents} busy={knowledgeBusy} feishuUrl={feishuUrl} setFeishuUrl={setFeishuUrl} importFiles={importFiles} importFeishu={importFeishu} deleteDocument={async (id) => { await db.documents.delete(id); await reloadLocalData(); }} />}
-        {activeTab === "humor" && <HumorView materials={humorMaterials} documents={documents} busy={knowledgeBusy} importFiles={importFiles} openKnowledge={() => setActiveTab("knowledge")} reload={reloadLocalData} setNotice={setNotice} />}
+        {activeTab === "knowledge" && <KnowledgeView documents={documents} materials={humorMaterials} busy={knowledgeBusy} feishuUrl={feishuUrl} setFeishuUrl={setFeishuUrl} importFiles={importFiles} importFeishu={importFeishu} deleteDocument={deleteKnowledgeDocument} reload={reloadLocalData} setNotice={setNotice} />}
         {activeTab === "review" && <><div className="review-script-action"><button className="button secondary" disabled={!latestSession?.scenarioSnapshot || isPracticing} onClick={() => latestSession && openStudio("learn", latestSession)}><GitCompareArrows size={17} />选最佳表现，迭代台本</button>{latestSession && !latestSession.scenarioSnapshot && <span>这条旧记录没有当时的原稿快照，不能精确对照。</span>}</div><ReviewView latestSession={latestSession} sessions={sessions} review={review} goals={goals} selectRound={selectRound} setActiveTab={setActiveTab} setLatestSession={(session) => { setLatestSession(session); setReview(session.review ?? buildLocalReview(session.transcript, session.metrics, session.scenarioSnapshot ?? getScenario(session.scenarioId))); }} downloadRecording={downloadRecording} deleteSession={deleteSession} /></>}
       </section>
 
@@ -775,48 +782,86 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
   </div>;
 }
 
-function KnowledgeView({ documents, busy, feishuUrl, setFeishuUrl, importFiles, importFeishu, deleteDocument }: { documents: KnowledgeDocument[]; busy: boolean; feishuUrl: string; setFeishuUrl: (value: string) => void; importFiles: (files: FileList | null) => Promise<void>; importFeishu: () => Promise<void>; deleteDocument: (id: string) => Promise<void> }) {
-  return <div className="knowledge-layout"><section className="panel import-panel"><div className="panel-head"><div><p className="section-label">本地资料</p><h2>导入你的知识与台本</h2></div><span className="privacy-badge"><ShieldCheck size={14} /> 存在浏览器内</span></div><label className="upload-zone"><Upload size={28} /><strong>{busy ? "正在处理资料" : "选择 DOCX、PDF、Markdown 或 TXT"}</strong><span>文件会在本机解析和建立索引</span><input type="file" multiple accept=".docx,.pdf,.md,.txt" onChange={(event) => void importFiles(event.target.files)} disabled={busy} /></label><div className="divider"><span>或连接云端</span></div><div className="feishu-import"><input value={feishuUrl} onChange={(event) => setFeishuUrl(event.target.value)} placeholder="粘贴飞书 docx 或 wiki 链接" /><button className="button primary" onClick={() => void importFeishu()} disabled={busy || !feishuUrl.trim()}><Import size={16} />读取飞书</button></div><p className="helper-text">飞书连接器需要在 `.env.local` 配置只读应用凭证。</p></section><section className="panel library-panel"><div className="panel-head"><div><p className="section-label">资料库</p><h2>{documents.length} 份可用资料</h2></div></div><div className="document-list">{!documents.length && <div className="empty-copy">导入资料后，目标生成器和真实听众会使用相关片段。</div>}{documents.map((document) => <div className="document-row" key={document.id}><div className="document-icon">{document.source === "feishu" ? <Library size={19} /> : <FileText size={19} />}</div><div><strong>{document.title}</strong><span>{document.source === "feishu" ? "飞书" : "本地文件"} · {document.chunks.length} 个片段</span></div><button className="icon-button" title="删除资料" onClick={() => void deleteDocument(document.id)}><Trash2 size={17} /></button></div>)}</div></section></div>;
+function KnowledgeView({ documents, materials, busy, feishuUrl, setFeishuUrl, importFiles, importFeishu, deleteDocument, reload, setNotice }: { documents: KnowledgeDocument[]; materials: HumorMaterial[]; busy: boolean; feishuUrl: string; setFeishuUrl: (value: string) => void; importFiles: (files: FileList | null) => Promise<void>; importFeishu: () => Promise<void>; deleteDocument: (id: string) => Promise<void>; reload: () => Promise<void>; setNotice: (value: string) => void }) {
+  const [source, setSource] = useState<"documents" | "inspiration">("documents");
+  const [requestedEditId, setRequestedEditId] = useState<string>();
+  const sourceLabel = (document: KnowledgeDocument) => document.source === "feishu" ? "飞书" : document.source === "inspiration" ? "灵感" : "本地文件";
+  return <div className="knowledge-hub">
+    <nav className="knowledge-source-tabs" aria-label="知识来源">
+      <button className={source === "documents" ? "active" : ""} onClick={() => setSource("documents")}><Library size={17} />文档与外部知识库</button>
+      <button className={source === "inspiration" ? "active" : ""} onClick={() => setSource("inspiration")}><Lightbulb size={17} />灵感记录 <span>{materials.length}</span></button>
+    </nav>
+    {source === "documents" ? <div className="knowledge-layout"><section className="panel import-panel"><div className="panel-head"><div><p className="section-label">知识来源</p><h2>导入资料</h2></div><span className="privacy-badge"><ShieldCheck size={14} /> 本机</span></div><label className="upload-zone"><Upload size={28} /><strong>{busy ? "正在处理资料" : "选择 DOCX、PDF、Markdown 或 TXT"}</strong><input type="file" multiple accept=".docx,.pdf,.md,.txt" onChange={(event) => void importFiles(event.target.files)} disabled={busy} /></label><div className="divider"><span>或</span></div><div className="feishu-import"><input value={feishuUrl} onChange={(event) => setFeishuUrl(event.target.value)} placeholder="粘贴飞书 docx 或 wiki 链接" /><button className="button primary" onClick={() => void importFeishu()} disabled={busy || !feishuUrl.trim()}><Import size={16} />读取飞书</button></div></section><section className="panel library-panel"><div className="panel-head"><div><p className="section-label">知识库</p><h2>{documents.length} 份资料</h2></div></div><div className="document-list">{!documents.length && <div className="empty-copy">还没有资料。</div>}{documents.map((document) => <div className="document-row" key={document.id}><div className="document-icon">{document.source === "inspiration" ? <Lightbulb size={19} /> : document.source === "feishu" ? <Library size={19} /> : <FileText size={19} />}</div><div><strong>{document.title}</strong><span>{sourceLabel(document)} · {document.chunks.length} 个片段</span></div>{document.source === "inspiration" && <button className="icon-button" title="编辑灵感" onClick={() => { setRequestedEditId(document.sourceMaterialId); setSource("inspiration"); }}><Pencil size={16} /></button>}<button className="icon-button" title="删除资料" onClick={() => void deleteDocument(document.id)}><Trash2 size={17} /></button></div>)}</div></section></div> : <InspirationSource materials={materials} busy={busy} requestedEditId={requestedEditId} reload={reload} setNotice={setNotice} />}
+  </div>;
 }
 
-function HumorView({ materials, documents, busy, importFiles, openKnowledge, reload, setNotice }: { materials: HumorMaterial[]; documents: KnowledgeDocument[]; busy: boolean; importFiles: (files: FileList | null) => Promise<void>; openKnowledge: () => void; reload: () => Promise<void>; setNotice: (value: string) => void }) {
+export function InspirationSource({ materials, busy, requestedEditId, reload, setNotice }: { materials: HumorMaterial[]; busy: boolean; requestedEditId?: string; reload: () => Promise<void>; setNotice: (value: string) => void }) {
+  const requestedItem = materials.find(material => material.id === requestedEditId);
   const [message, setMessage] = useState("");
-  const [chat, setChat] = useState<ChatLine[]>([{ id: "material-welcome", role: "assistant", text: "想到什么就直接说，不用先分类。我会帮你整理成以后能用于演讲、故事或幽默表达的素材。" }]);
+  const [chat, setChat] = useState<ChatLine[]>([{ id: "material-welcome", role: "assistant", text: "说下你的观察、故事或想法，我会整理后加入知识库。" }]);
   const [language, setLanguage] = useState<TrainingLanguage>("zh-CN");
+  const [materialBusy, setMaterialBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | undefined>(requestedItem?.id);
+  const [editTitle, setEditTitle] = useState(requestedItem?.title ?? "");
+  const [editContent, setEditContent] = useState(requestedItem?.content ?? "");
+  const isBusy = busy || materialBusy;
 
   const organizeMaterial = async () => {
     const userText = message.trim();
-    if (!userText || busy) return;
+    if (!userText || isBusy) return;
     setMessage("");
+    setMaterialBusy(true);
     setChat((current) => [...current, { id: crypto.randomUUID(), role: "user", text: userText }]);
     try {
       const response = await fetch("/api/materials/organize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: userText, language }) });
       if (!response.ok) throw new Error("素材整理失败");
       const { material, source } = await response.json() as { material: Omit<HumorMaterial, "id" | "createdAt" | "updatedAt">; source: string };
       const now = new Date().toISOString();
-      const stored: HumorMaterial = { ...material, id: crypto.randomUUID(), createdAt: now, updatedAt: now };
-      await db.humorMaterials.put(stored);
+      const id = crypto.randomUUID();
+      const stored: HumorMaterial = { ...material, id, knowledgeDocumentId: inspirationDocumentId(id), createdAt: now, updatedAt: now };
+      await db.transaction("rw", db.humorMaterials, db.documents, async () => {
+        await db.humorMaterials.put(stored);
+        await db.documents.put(materialToKnowledgeDocument(stored));
+      });
       await reload();
       setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `已经替你整理为“${stored.title}”。${source === "local" ? "本地整理器已删除常见口头冗余；连接文本教练后还能进一步重写语序。" : "我已经理顺语序、删除重复和口头冗余，并保留了原意。"}` }]);
-      setNotice("灵感已经由对话整理并保存在本机素材库。");
+      setNotice("灵感已整理并加入知识库。");
     } catch {
       setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "这段灵感暂时没能整理，请稍后再说一次。" }]);
-    }
+    } finally { setMaterialBusy(false); }
+  };
+
+  const beginEdit = (item: HumorMaterial) => { setEditingId(item.id); setEditTitle(item.title); setEditContent(item.content); };
+  const saveMaterial = async (item: HumorMaterial) => {
+    if (!editTitle.trim() || !editContent.trim() || isBusy) return;
+    setMaterialBusy(true);
+    try {
+      const knowledgeDocumentId = item.knowledgeDocumentId ?? inspirationDocumentId(item.id);
+      const updated: HumorMaterial = { ...item, title: editTitle.trim(), content: editContent.trim(), knowledgeDocumentId, updatedAt: new Date().toISOString() };
+      const linked = await db.documents.get(knowledgeDocumentId);
+      await db.transaction("rw", db.humorMaterials, db.documents, async () => {
+        await db.humorMaterials.put(updated);
+        await db.documents.put(materialToKnowledgeDocument(updated, linked));
+      });
+      setEditingId(undefined);
+      await reload();
+      setNotice("灵感与知识索引已更新。");
+    } finally { setMaterialBusy(false); }
+  };
+  const deleteMaterial = async (item: HumorMaterial) => {
+    const documentId = item.knowledgeDocumentId ?? inspirationDocumentId(item.id);
+    await db.transaction("rw", db.humorMaterials, db.documents, async () => { await db.humorMaterials.delete(item.id); await db.documents.delete(documentId); });
+    await reload();
   };
 
   return <div className="humor-layout">
-    <section className="material-sources" aria-label="素材导入方式">
-      <button onClick={openKnowledge}><Library size={22} /><strong>外部知识库</strong><span>连接飞书文档或 Wiki</span></button>
-      <label className={busy ? "disabled" : ""}><Upload size={22} /><strong>{busy ? "正在导入" : "上传文档"}</strong><span>DOCX、PDF、Markdown、TXT</span><input type="file" multiple accept=".docx,.pdf,.md,.txt" disabled={busy} onChange={(event) => void importFiles(event.target.files)} /></label>
-      <button onClick={() => { document.querySelector<HTMLButtonElement>(".material-chat .voice-input button")?.click(); }}><Mic size={22} /><strong>语音记录</strong><span>识别后确认整理</span></button>
-    </section>
     <div className="humor-workspace">
       <section className="panel coach-chat material-chat">
         <div className="panel-head"><div><p className="section-label">灵感对话</p><h2>说出来，教练替你整理</h2></div><div className="segmented two language-mini"><button className={language === "zh-CN" ? "active" : ""} onClick={() => setLanguage("zh-CN")}>中文</button><button className={language === "en-US" ? "active" : ""} onClick={() => setLanguage("en-US")}>EN</button></div></div>
         <div className="coach-chat-body">{chat.map((line) => <div key={line.id} className={`coach-message ${line.role}`}><span>{line.role === "assistant" ? "教练" : "你"}</span><p>{line.text}</p></div>)}</div>
-        <div className="chat-composer"><textarea aria-label="讲述灵感素材" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void organizeMaterial(); } }} placeholder="比如：今天开会时我发现，大家说要拥抱 AI，最后最忙的是复制粘贴的人..." /><VoiceInput language={language} disabled={busy} onText={text => setMessage(current => `${current}${current ? " " : ""}${text}`)} /><button className="icon-button send-button" title="发送并整理" disabled={!message.trim() || busy} onClick={() => void organizeMaterial()}><Send size={18} /></button></div>
+        <div className="chat-composer"><textarea aria-label="讲述灵感素材" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void organizeMaterial(); } }} placeholder="比如：今天开会时我发现，大家说要拥抱 AI，最后最忙的是复制粘贴的人..." /><VoiceInput language={language} disabled={isBusy} onText={text => setMessage(current => `${current}${current ? " " : ""}${text}`)} /><button className="icon-button send-button" title="发送并整理" disabled={!message.trim() || isBusy} onClick={() => void organizeMaterial()}><Send size={18} /></button></div>
       </section>
-      <section className="panel material-list"><div className="panel-head"><div><p className="section-label">自动整理 · 仅存本机</p><h2>{materials.length} 条灵感素材</h2></div><span className="library-count">另有 {documents.length} 份知识资料</span></div>{!materials.length && <div className="empty-copy">这里没有需要填写的表单。讲一段经历或观察，教练会自动整理。</div>}{materials.map((item) => <article className="material-row" key={item.id}><div><span>{item.language === "en-US" ? "English" : "中文"}</span><strong>{item.title}</strong>{item.coreIdea && <em className="material-core">核心观点：{item.coreIdea}</em>}<p>{item.content}</p>{!!item.tags.length && <div className="material-tags">{item.tags.map(tag => <i key={tag}>{tag}</i>)}</div>}<small>边界：{item.audienceBoundary}</small></div><button className="icon-button" title="删除素材" onClick={async () => { await db.humorMaterials.delete(item.id); await reload(); }}><Trash2 size={16} /></button></article>)}</section>
+      <section className="panel material-list"><div className="panel-head"><div><p className="section-label">知识来源</p><h2>{materials.length} 条灵感</h2></div></div>{!materials.length && <div className="empty-copy">还没有灵感记录。</div>}{materials.map((item) => <article className={`material-row ${editingId === item.id ? "editing" : ""}`} key={item.id}>{editingId === item.id ? <div className="material-editor"><input aria-label="编辑灵感标题" value={editTitle} maxLength={200} onChange={(event) => setEditTitle(event.target.value)} /><textarea aria-label="编辑灵感内容" value={editContent} maxLength={10000} onChange={(event) => setEditContent(event.target.value)} /><div className="material-edit-actions"><button className="button ghost" disabled={isBusy} onClick={() => setEditingId(undefined)}><X size={16} />取消</button><button className="button primary" disabled={isBusy || !editTitle.trim() || !editContent.trim()} onClick={() => void saveMaterial(item)}><Check size={16} />保存</button></div></div> : <div><span>{item.language === "en-US" ? "English" : "中文"}</span><strong>{item.title}</strong>{item.coreIdea && <em className="material-core">核心观点：{item.coreIdea}</em>}<p>{item.content}</p>{!!item.tags.length && <div className="material-tags">{item.tags.map(tag => <i key={tag}>{tag}</i>)}</div>}</div>}<div className="material-actions">{editingId !== item.id && <button className="icon-button" title="编辑灵感" disabled={isBusy} onClick={() => beginEdit(item)}><Pencil size={16} /></button>}<button className="icon-button" title="删除灵感" disabled={isBusy} onClick={() => void deleteMaterial(item)}><Trash2 size={16} /></button></div></article>)}</section>
     </div>
     <section className="method-band"><div className="section-heading"><div><p className="section-label">训练方法</p><h2>从灵感到可讲述的素材</h2></div><p>以下方法为公开资料主题的转述，不复制书籍正文，也不模仿特定作者文风。</p></div><div className="method-grid">{HUMOR_METHODS.map((method) => <article className="method-card" key={method.id}><Lightbulb size={19} /><h3>{method.title[language]}</h3><p>{method.summary[language]}</p><strong>{method.exercise[language]}</strong></article>)}</div><div className="source-links"><span>合法公开来源：</span>{HUMOR_SOURCES.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.label}</a>)}</div></section>
   </div>;

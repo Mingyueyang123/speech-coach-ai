@@ -37,3 +37,25 @@ it("upgrades v2 without rewriting private goals and retains frozen scripts and m
   expect((await db.scriptVersions.get("v2"))?.parentId).toBe("v1");
   expect((await db.coachMemories.get("memory"))?.sourceSessionIds).toEqual(["best"]);
 });
+
+it("migrates existing inspiration into the knowledge library without changing its text", async () => {
+  const previous = new Dexie("speech-coach-ai");
+  previous.version(3).stores({
+    documents: "id, source, title, createdAt, updatedAt", sessions: "id, scenarioId, goalId, language, startedAt",
+    profiles: "id, updatedAt", goals: "id, scenarioKind, language, targetDate, updatedAt",
+    humorMaterials: "id, type, language, createdAt, updatedAt", preferences: "id, updatedAt",
+    scriptVersions: "id, scopeKey, createdAt", coachMemories: "id, language, scenarioKind, createdAt",
+  });
+  await previous.table("humorMaterials").put({
+    id: "old-idea", type: "story", title: "旧灵感", content: "这是不能丢失的原始灵感。", language: "zh-CN",
+    scenarioKinds: ["live-speaking"], audienceBoundary: "不涉及个人隐私", sensitiveTopics: [], tags: [], createdAt: "2026-01-01", updatedAt: "2026-01-01",
+  });
+  previous.close();
+  await db.open();
+  const material = await db.humorMaterials.get("old-idea");
+  const document = await db.documents.get("inspiration:old-idea");
+  expect(material?.content).toBe("这是不能丢失的原始灵感。");
+  expect(material?.knowledgeDocumentId).toBe("inspiration:old-idea");
+  expect(document?.source).toBe("inspiration");
+  expect(document?.chunks[0].text).toContain("这是不能丢失的原始灵感");
+});

@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { AppPreferences, HumorMaterial, KnowledgeDocument, SessionRecord, TrainingGoal, UserProfile, ScriptVersion, CoachMemory } from "./types";
+import { inspirationDocumentId, materialToKnowledgeDocument } from "./knowledge";
 
 class SpeechCoachDatabase extends Dexie {
   documents!: EntityTable<KnowledgeDocument, "id">;
@@ -28,6 +29,18 @@ class SpeechCoachDatabase extends Dexie {
     this.version(3).stores({
       scriptVersions: "id, scopeKey, createdAt",
       coachMemories: "id, language, scenarioKind, createdAt",
+    });
+    this.version(4).stores({}).upgrade(async (transaction) => {
+      const materials = await transaction.table<HumorMaterial>("humorMaterials").toArray();
+      const documents = transaction.table<KnowledgeDocument>("documents");
+      const materialTable = transaction.table<HumorMaterial>("humorMaterials");
+      for (const material of materials) {
+        const knowledgeDocumentId = material.knowledgeDocumentId ?? inspirationDocumentId(material.id);
+        const linked = await documents.get(knowledgeDocumentId);
+        const updated = { ...material, knowledgeDocumentId };
+        await documents.put(materialToKnowledgeDocument(updated, linked));
+        if (!material.knowledgeDocumentId) await materialTable.put(updated);
+      }
     });
   }
 }
