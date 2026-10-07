@@ -1,3 +1,4 @@
+import { getConfig } from "@/lib/server-config";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildLocalGoalPlan } from "@/lib/goals";
@@ -34,10 +35,11 @@ function outputText(payload: unknown): string {
 }
 
 export async function POST(request: Request) {
+  const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "目标计划参数无效。" }, { status: 400 });
   const fallback = buildLocalGoalPlan(parsed.data.goal);
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = config.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ plan: fallback, source: "local" });
 
   const isEnglish = parsed.data.goal.language === "en-US";
@@ -56,7 +58,7 @@ export async function POST(request: Request) {
     const upstream = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: process.env.OPENAI_REVIEW_MODEL || "gpt-5-mini", input: prompt }),
+      body: JSON.stringify({ model: config.OPENAI_REVIEW_MODEL || "gpt-5-mini", input: prompt }),
     });
     if (!upstream.ok) return NextResponse.json({ plan: fallback, source: "local" });
     const text = outputText(await upstream.json()).replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();

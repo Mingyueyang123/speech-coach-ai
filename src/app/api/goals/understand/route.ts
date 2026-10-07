@@ -1,3 +1,4 @@
+import { getConfig } from "@/lib/server-config";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { inferGoalDraft } from "@/lib/conversation";
@@ -24,10 +25,11 @@ function outputText(payload: unknown): string {
 }
 
 export async function POST(request: Request) {
+  const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "目标描述无效。" }, { status: 400 });
   const fallback = inferGoalDraft(parsed.data.message, parsed.data.profile);
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = config.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ draft: fallback, source: "local" });
 
   try {
@@ -35,7 +37,7 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.OPENAI_REVIEW_MODEL || "gpt-5-mini",
+        model: config.OPENAI_REVIEW_MODEL || "gpt-5-mini",
         input: [
           "Extract one speech-training goal from the user's conversational message. Return strict JSON only.",
           "Infer scenario, date, audience, outcome, duration, language, safe humor level, and 3-5 success criteria. Do not ask the user to fill fields.",

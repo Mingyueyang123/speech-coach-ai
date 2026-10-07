@@ -1,3 +1,4 @@
+import { getConfig } from "@/lib/server-config";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -40,9 +41,10 @@ function extractOutputText(payload: unknown): string {
 }
 
 export async function POST(request: Request) {
+  const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "复盘参数无效。" }, { status: 400 });
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = config.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "AI_REVIEW_NOT_CONFIGURED" }, { status: 503 });
 
   const isEnglish = parsed.data.scenario.language === "en-US";
@@ -63,7 +65,7 @@ export async function POST(request: Request) {
   const upstream = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: process.env.OPENAI_REVIEW_MODEL || "gpt-5-mini", input: prompt }),
+    body: JSON.stringify({ model: config.OPENAI_REVIEW_MODEL || "gpt-5-mini", input: prompt }),
   });
   if (!upstream.ok) {
     return NextResponse.json({ error: "AI_REVIEW_FAILED" }, { status: upstream.status });

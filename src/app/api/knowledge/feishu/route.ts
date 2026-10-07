@@ -1,3 +1,4 @@
+import { getConfig } from "@/lib/server-config";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -70,12 +71,13 @@ async function fetchDocument(documentId: string, accessToken: string): Promise<s
 }
 
 export async function POST(request: Request) {
+  const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "请输入有效的飞书文档或 Wiki 链接。" }, { status: 400 });
   const source = extractToken(parsed.data.url);
   if (!source) return NextResponse.json({ error: "链接中未找到飞书 docx/wiki 标识。" }, { status: 400 });
-  const appId = process.env.FEISHU_APP_ID;
-  const appSecret = process.env.FEISHU_APP_SECRET;
+  const appId = config.FEISHU_APP_ID;
+  const appSecret = config.FEISHU_APP_SECRET;
   if (!appId || !appSecret) {
     return NextResponse.json({ error: "未配置 FEISHU_APP_ID 和 FEISHU_APP_SECRET。" }, { status: 503 });
   }

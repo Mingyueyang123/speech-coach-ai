@@ -1,3 +1,4 @@
+import { getConfig } from "@/lib/server-config";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { inferMaterial } from "@/lib/conversation";
@@ -19,10 +20,11 @@ function outputText(payload: unknown): string {
 }
 
 export async function POST(request: Request) {
+  const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "素材内容无效。" }, { status: 400 });
   const fallback = inferMaterial(parsed.data.message, parsed.data.language);
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = config.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ material: fallback, source: "local" });
 
   try {
@@ -30,7 +32,7 @@ export async function POST(request: Request) {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.OPENAI_REVIEW_MODEL || "gpt-5-mini",
+        model: config.OPENAI_REVIEW_MODEL || "gpt-5-mini",
         input: [
           "Organize the user's spoken or typed inspiration into a reusable speech material card. Return strict JSON only.",
           "Preserve the user's meaning. Do not imitate a living writer. Do not create attacks on individuals or protected groups.",

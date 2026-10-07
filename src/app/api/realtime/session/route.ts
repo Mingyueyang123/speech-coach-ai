@@ -1,10 +1,11 @@
+import { getConfig } from "@/lib/server-config";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
 export const runtime = "nodejs";
 
 const requestSchema = z.object({
-  sdp: z.string().min(20),
+  sdp: z.string().min(20).max(100000).refine(value => !/(^|\n)m=video\s/.test(value), "不接收视频轨道"),
   intensity: z.enum(["friendly", "balanced", "challenging"]),
   knowledgeContext: z.string().max(12000).default(""),
   scenario: z.object({
@@ -53,7 +54,8 @@ function buildInstructions(input: z.infer<typeof requestSchema>): string {
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const config = await getConfig();
+  const apiKey = config.OPENAI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
       { error: "未配置 OPENAI_API_KEY；你仍可使用本地录像、转写和规则复盘。" },
@@ -68,7 +70,7 @@ export async function POST(request: Request) {
 
   const session = {
     type: "realtime",
-    model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
+    model: config.OPENAI_REALTIME_MODEL || "gpt-realtime",
     instructions: buildInstructions(parsed.data),
     audio: {
       input: {
@@ -80,20 +82,24 @@ export async function POST(request: Request) {
   };
 
   const form = new FormData();
-  form.set("sdp", new Blob([parsed.data.sdp], { type: "application/sdp" }), "offer.sdp");
-  form.set("session", new Blob([JSON.stringify(session)], { type: "application/json" }), "session.json");
+  form.set("sdp", parsed.data.sdp);
+  form.set("session", JSON.stringify(session));
 
-  const upstream = await fetch("https://api.openai.com/v1/realtime/calls", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-  });
-  const body = await upstream.text();
-  if (!upstream.ok) {
-    return NextResponse.json(
-      { error: "OpenAI 实时会话创建失败，请检查模型权限和 API Key。", detail: body.slice(0, 500) },
-      { status: upstream.status },
-    );
+  try {
+    const upstream = await fetch("https://api.openai.com/v1/realtime/calls", {
+      method: "POST",
+      signal: AbortSignal.timeout(18000),
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    });
+    if (!upstream.ok) {
+      return NextResponse.json(
+        { error: `OpenAI 实时会话创建失败 (${upstream.status})，请检查模型权限、额度和 API Key。` },
+        { status: upstream.status },
+      );
+    }
+    return new Response(await upstream.text(), { status: 201, headers: { "Content-Type": "application/sdp" } });
+  } catch {
+    return NextResponse.json({ error: "OpenAI 连接超时或网络不可用，可使用浏览器识别或手动滚动。" }, { status: 502 });
   }
-  return new Response(body, { status: 201, headers: { "Content-Type": "application/sdp" } });
 }

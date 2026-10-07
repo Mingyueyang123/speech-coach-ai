@@ -64,6 +64,15 @@ npm run dev
 
 ## OpenAI 配置
 
+侧边栏的 **API 配置** 可保存 OpenAI API Key、模型设置和可选的飞书凭证。保存后下次调用立即生效。配置只写入本机服务端的 `local-data/api-config.json`（0600 权限，未加密，已被 Git 忽略），浏览器只读到配置状态，不会读回密钥。配置接口仅接受本机同源写入；本项目仍以单人本地运行使用为前提，不能直接作为公网多人服务部署。
+
+- OpenAI Key：实时听众、实时语音跟随、目标理解、素材整理和 AI 复盘共用一个 Key。音频通过 WebRTC 发送至 OpenAI，视频保持本地。
+- 无 Key：浏览器 SpeechRecognition 可提供语音跟随，但依赖浏览器支持、服务网络和权限，通常不适用于内嵌浏览器。失败时提供手动滚动。
+- 视频/姿态/表情：使用 MediaPipe，不需要 API Key；模型加载需要网络。
+- 飞书：仅导入飞书资料需要 App ID、App Secret 以及对应文档的读取权限。
+
+桌面提词使用 [Document Picture-in-Picture](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)，在支持的桌面 Chrome 中可跨 App 置顶，可通过窗口边缘缩放、标题栏移动；关闭主页面会关闭悬浮窗。内嵌浏览器不支持时会明确提示，并保留页内拖动缩放。悬浮窗包含可隐藏和缩放的计时器，练习设置可以单独收起。录制中的计时使用实际开始时间计算，独立计时可开始、暂停和重置。
+
 在 `.env.local` 中设置：
 
 ```bash

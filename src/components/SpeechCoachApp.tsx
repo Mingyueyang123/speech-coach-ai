@@ -4,10 +4,12 @@ import {
   ArrowRight, Camera, Check, ChevronDown, ChevronRight, ChevronUp,
   CircleStop, Download, EyeOff, FileText, Gauge, GripHorizontal, Import,
   Languages, Library, Lightbulb, Maximize2, MessageCircle, Mic, Play, Send,
-  Power, RotateCcw, ShieldCheck, Sparkles, Target, Trash2, Upload, Users, Video,
+  Power, Settings, RotateCcw, ShieldCheck, Sparkles, Target, Trash2, Upload, Users, Video,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiSettings } from "@/components/ApiSettings";
+import { FloatingTools, PracticeClock } from "@/components/FloatingTools";
 import { useMediaSession } from "@/hooks/useMediaSession";
 import { buildLocalReview, calculateDeliveryMetrics } from "@/lib/analysis";
 import { db } from "@/lib/db";
@@ -24,7 +26,7 @@ import type {
   TrainingGoal, TrainingLanguage, UserProfile,
 } from "@/lib/types";
 
-type AppTab = "practice" | "goals" | "knowledge" | "humor" | "review";
+type AppTab = "practice" | "goals" | "knowledge" | "humor" | "review" | "settings";
 
 interface RecognitionAlternativeLike { transcript: string; confidence?: number }
 interface RecognitionResultLike { isFinal: boolean; 0: RecognitionAlternativeLike }
@@ -52,6 +54,7 @@ const TAB_LABELS: Array<{ id: AppTab; label: string; icon: typeof Mic }> = [
   { id: "knowledge", label: "知识库", icon: Library },
   { id: "humor", label: "灵感素材", icon: Lightbulb },
   { id: "review", label: "复盘", icon: Gauge },
+  { id: "settings", label: "API 配置", icon: Settings },
 ];
 
 const INTENSITY_LABELS: Record<AudienceIntensity, string> = { friendly: "友好", balanced: "正常", challenging: "挑战" };
@@ -77,7 +80,7 @@ export function SpeechCoachApp() {
   const [speechStatus, setSpeechStatus] = useState("等待语音");
   const [elapsed, setElapsed] = useState(0);
   const [isPracticing, setIsPracticing] = useState(false);
-  const [transcript, setTranscript] = useState("");
+  const [, setTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -105,6 +108,8 @@ export function SpeechCoachApp() {
   const spokenTextRef = useRef("");
   const progressRef = useRef(0);
   const missedMatchesRef = useRef(0);
+  const followRef = useRef<(text: string, final: boolean) => void>(() => {});
+  const speechModeRef = useRef<ScrollMode>("speech");
 
   const {
     videoRef, cameraReady, recording, visionStatus, error: mediaError,
@@ -184,15 +189,18 @@ export function SpeechCoachApp() {
     await db.preferences.put(next);
   }, [preferences]);
 
-  const setSpeechMatch = useCallback((spoken: string) => {
-    if (scrollMode !== "speech") return;
+  const setSpeechMatch = useCallback((spoken: string, final: boolean) => {
+    if (speechModeRef.current !== "speech") return;
+    if (spoken.trim().length < (scenario.language === "en-US" ? 8 : 4)) return;
     const match = findSpeechProgress(scenario.script, spoken, scenario.language, progressRef.current);
     if (!match.matched) {
+      if (!final) return;
       missedMatchesRef.current += 1;
       setSpeechStatus(`正在重新定位 ${missedMatchesRef.current}/4`);
       if (missedMatchesRef.current >= 4) {
         setSpeechStatus("识别连续偏离，已切到匀速滚动");
-        setNotice("语音跟随暂时无法定位台词，已自动切换到匀速滚动。");
+        setNotice("语音跟随暂时无法定位台词，已暂停自动滚动，可手动调整。");
+        setScrollSpeed(0);
         void savePreferences({ scrollMode: "manual" });
       }
       return;
@@ -205,14 +213,17 @@ export function SpeechCoachApp() {
     teleprompterRef.current
       ?.querySelector(`[data-teleprompter-section="${progressToSection(match.progress, count)}"]`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [savePreferences, scenario, scriptParagraphs.length, scrollMode, teleprompterMode]);
+  }, [savePreferences, scenario, scriptParagraphs.length, teleprompterMode]);
+
+  useEffect(() => { followRef.current = setSpeechMatch; speechModeRef.current = scrollMode; }, [setSpeechMatch, scrollMode]);
 
   const configureSpeechRecognition = useCallback(() => {
     const browserWindow = window as typeof window & { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
     const Constructor = browserWindow.SpeechRecognition ?? browserWindow.webkitSpeechRecognition;
     if (!Constructor) {
       setSpeechStatus("浏览器不支持语音跟随");
-      setNotice("当前浏览器不支持连续语音识别，已使用匀速滚动。建议桌面 Chrome。");
+      setNotice("浏览器识别不可用。可在 API 配置中添加 OpenAI Key，或用桌面 Chrome。当前可手动滚动。");
+      setScrollSpeed(0);
       void savePreferences({ scrollMode: "manual" });
       return null;
     }
@@ -234,11 +245,14 @@ export function SpeechCoachApp() {
         setTurns((current) => [...current, { id: crypto.randomUUID(), role: "speaker", text: finalText, timestampMs: Date.now() }]);
       }
       setInterimTranscript(interimText);
-      setSpeechMatch(`${spokenTextRef.current} ${interimText}`);
+      followRef.current(`${spokenTextRef.current} ${interimText}`, Boolean(finalText));
     };
     recognition.onerror = () => {
       setSpeechStatus("语音识别中断");
-      setNotice("语音识别暂时中断；录像和本地视觉分析仍在继续。");
+      recognition.onend = null;
+      setScrollSpeed(0);
+      void savePreferences({ scrollMode: "manual" });
+      setNotice("浏览器语音服务中断，已暂停自动滚动。请检查网络，或在 API 配置中启用 OpenAI 语音。");
     };
     recognition.onend = () => {
       if (practicingRef.current) {
@@ -247,7 +261,7 @@ export function SpeechCoachApp() {
     };
     recognitionRef.current = recognition;
     return recognition;
-  }, [savePreferences, scenario.language, setSpeechMatch]);
+  }, [savePreferences, scenario.language]);
 
   const resetPractice = useCallback(() => {
     setTranscript("");
@@ -282,16 +296,32 @@ export function SpeechCoachApp() {
       setIsPracticing(true);
       setNotice(`第 ${roundIndex} 轮进行中：${ROUND_LABELS[teleprompterMode]}。`);
       timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000)), 250);
-      const recognition = configureSpeechRecognition();
-      try { recognition?.start(); } catch { /* Permission or duplicate start. */ }
       try {
+        const status = await fetch("/api/settings", { signal: AbortSignal.timeout(5000) }).then(r => r.json());
+        if (!practicingRef.current) return;
+        if (!status.openai) throw new Error("未配置 OpenAI Key，使用浏览器识别与本地听众");
         setAiStatus("正在连接真实听众");
-        realtimeRef.current = await connectRealtime({
+        const connection = await connectRealtime({
           stream, scenario, intensity, knowledgeContext, onStatus: setAiStatus,
           onTurn: (turn) => { if (turn.role === "audience") setTurns((current) => [...current, turn]); },
+          onTranscript: (text, final) => {
+            if (!practicingRef.current) return;
+            if (final) {
+              spokenTextRef.current += `${spokenTextRef.current ? "\n" : ""}${text}`;
+              setTranscript(spokenTextRef.current);
+              setTurns(current => [...current, { id: crypto.randomUUID(), role: "speaker", text, timestampMs: Date.now() }]);
+            }
+            setInterimTranscript(final ? "" : text);
+            followRef.current(`${spokenTextRef.current} ${final ? "" : text}`, final);
+          },
         });
+        if (!practicingRef.current) connection.disconnect();
+        else { realtimeRef.current = connection; setSpeechStatus("OpenAI 实时识别已连接"); }
       } catch (cause) {
+        if (!practicingRef.current) return;
         setAiStatus(cause instanceof Error ? cause.message : "真实听众未连接，当前使用本地模式");
+        const recognition = configureSpeechRecognition();
+        try { recognition?.start(); } catch { setNotice("浏览器语音启动失败，请检查权限或配置 OpenAI Key。"); }
       }
     } catch {
       setNotice("练习未开始：需要允许摄像头和麦克风权限。");
@@ -320,6 +350,7 @@ export function SpeechCoachApp() {
     const videoBlob = await stopRecording();
     const durationMs = Math.max(1000, Date.now() - startedAtRef.current);
     const metricTimeline = getMetricTimeline();
+    const transcript = spokenTextRef.current.trim();
     const metrics = calculateDeliveryMetrics(transcript, durationMs, metricTimeline, scenario.language);
     const session: SessionRecord = {
       id: crypto.randomUUID(), scenarioId: scenario.id.split(":")[0], goalId: activeGoal?.id,
@@ -459,7 +490,7 @@ export function SpeechCoachApp() {
     : activeTab === "goals" ? "目标中心"
       : activeTab === "knowledge" ? "知识库"
         : activeTab === "humor" ? "灵感素材库"
-          : "练习复盘";
+          : activeTab === "settings" ? "API 配置" : "练习复盘";
 
   return (
     <main className="app-shell">
@@ -467,7 +498,7 @@ export function SpeechCoachApp() {
         <div className="brand-block"><div className="brand-mark"><Mic size={20} /></div><div><strong>Speech Coach AI</strong><span>本地优先的演讲陪练</span></div></div>
         <nav className="main-nav" aria-label="主导航">
           {TAB_LABELS.map(({ id, label, icon: Icon }) => (
-            <button key={id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>
+            <button key={id} aria-label={label} title={label} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>
               <Icon size={18} /><span>{label}</span>{id === "goals" && goals.length > 0 && <em>{goals.length}</em>}{id === "knowledge" && documents.length > 0 && <em>{documents.length}</em>}
             </button>
           ))}
@@ -490,8 +521,9 @@ export function SpeechCoachApp() {
         </header>
         <div className="notice-bar"><Sparkles size={16} /><span>{notice}</span></div>
 
-        {activeTab === "practice" && (
+        <div hidden={activeTab !== "practice"}>
           <PracticeView
+            elapsed={elapsed}
             scenario={scenario} activeGoal={activeGoal} roundIndex={roundIndex} selectRound={selectRound}
             isPracticing={isPracticing} cameraReady={cameraReady} recording={recording} cameraCollapsed={preferences.cameraCollapsed}
             cameraHeight={preferences.cameraHeight} videoRef={videoRef} visionStatus={visionStatus} aiStatus={aiStatus}
@@ -505,7 +537,8 @@ export function SpeechCoachApp() {
             teleprompterRef={teleprompterRef} fontSize={fontSize} setFontSize={setFontSize}
             scrollSpeed={scrollSpeed} setScrollSpeed={setScrollSpeed}
           />
-        )}
+        </div>
+        {activeTab === "settings" && <ApiSettings />}
 
         {activeTab === "goals" && <GoalsView goals={goals} documents={documents} profile={profile} busy={goalBusy} setBusy={setGoalBusy} reload={reloadLocalData} chooseGoal={chooseGoal} setNotice={setNotice} />}
         {activeTab === "knowledge" && <KnowledgeView documents={documents} busy={knowledgeBusy} feishuUrl={feishuUrl} setFeishuUrl={setFeishuUrl} importFiles={importFiles} importFeishu={importFeishu} deleteDocument={async (id) => { await db.documents.delete(id); await reloadLocalData(); }} />}
@@ -519,6 +552,7 @@ export function SpeechCoachApp() {
 }
 
 interface PracticeViewProps {
+  elapsed: number;
   scenario: PracticeScenario; activeGoal: TrainingGoal | null; roundIndex: 1 | 2 | 3; selectRound: (index: 1 | 2 | 3) => void;
   isPracticing: boolean; cameraReady: boolean; recording: boolean; cameraCollapsed: boolean; cameraHeight: number;
   videoRef: React.RefObject<HTMLVideoElement | null>; visionStatus: string; aiStatus: string; mediaError: string;
@@ -534,7 +568,7 @@ interface PracticeViewProps {
 }
 
 function PracticeView({
-  scenario, activeGoal, roundIndex, selectRound, isPracticing, cameraReady,
+  elapsed, scenario, activeGoal, roundIndex, selectRound, isPracticing, cameraReady,
   recording, cameraCollapsed, cameraHeight, videoRef, visionStatus, aiStatus,
   mediaError, prepareCamera, startPractice, stopPractice, stopCamera,
   toggleCameraCollapsed, beginCameraResize, resetPractice, turns,
@@ -543,6 +577,7 @@ function PracticeView({
   scriptParagraphs, activeSection, teleprompterRef, fontSize, setFontSize,
   scrollSpeed, setScrollSpeed,
 }: PracticeViewProps) {
+  const [settingsHidden, setSettingsHidden] = useState(false);
   const roundStates = activeGoal?.rounds ?? createPracticeRounds();
   const content = teleprompterMode === "cues" ? scenario.cues : scriptParagraphs;
   return <>
@@ -556,14 +591,14 @@ function PracticeView({
             <div><p className="section-label">镜头预览</p><h2>{cameraCollapsed ? (recording ? "画面已收起 · 仍在录制" : "画面已收起") : "像现场一样练"}</h2></div>
             <div className="panel-actions"><span className="privacy-badge"><ShieldCheck size={14} /> 本地分析</span><button className="icon-button" title={cameraCollapsed ? "展开摄像头" : "收起摄像头"} onClick={toggleCameraCollapsed}>{cameraCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}</button></div>
           </div>
-          {!cameraCollapsed && <>
+          <div hidden={cameraCollapsed}>
             <div className="video-frame" style={{ height: cameraHeight }}>
               <video ref={videoRef} muted playsInline />
               {!cameraReady && <div className="video-empty"><Camera size={34} /><strong>摄像头尚未开启</strong><span>建议镜头包含头部、肩膀和双手活动区域</span></div>}
               <div className="video-overlay"><span>{visionStatus}</span><span>{aiStatus}</span></div>
             </div>
             <button className="camera-resize-handle" title="拖动调整预览高度" onPointerDown={beginCameraResize}><GripHorizontal size={20} /></button>
-          </>}
+          </div>
           {mediaError && <p className="error-text">{mediaError}</p>}
           <div className="stage-actions">
             {!cameraReady && <button className="button secondary" onClick={prepareCamera}><Camera size={17} />开启摄像头</button>}
@@ -585,22 +620,28 @@ function PracticeView({
 
       <aside className="coach-column">
         <section className="panel controls-panel">
-          <p className="section-label">练习设置</p>
-          <label>训练语言<div className="segmented two"><button className={scenario.language === "zh-CN" ? "active" : ""} onClick={() => chooseScenario(scenario.kind, "zh-CN")}><Languages size={14} />中文</button><button className={scenario.language === "en-US" ? "active" : ""} onClick={() => chooseScenario(scenario.kind, "en-US")}><Languages size={14} />English</button></div></label>
+          <div className="panel-head compact"><h2>练习设置</h2><button className="icon-button" title={settingsHidden ? "展开练习设置" : "收起练习设置"} onClick={() => setSettingsHidden(!settingsHidden)}>{settingsHidden ? <ChevronDown size={18} /> : <ChevronUp size={18} />}</button></div>
+          <div hidden={settingsHidden} className="practice-setting-fields">
+          <div className="setting-field">训练语言<div className="segmented two" role="group" aria-label="训练语言"><button className={scenario.language === "zh-CN" ? "active" : ""} onClick={() => chooseScenario(scenario.kind, "zh-CN")}><Languages size={14} />中文</button><button className={scenario.language === "en-US" ? "active" : ""} onClick={() => chooseScenario(scenario.kind, "en-US")}><Languages size={14} />English</button></div></div>
           <label>场景<select value={scenario.kind} onChange={(event) => chooseScenario(event.target.value as ScenarioKind, scenario.language)} disabled={isPracticing}>{Object.entries(SCENARIO_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <label>听众强度<div className="segmented">{(["friendly", "balanced", "challenging"] as AudienceIntensity[]).map((value) => <button key={value} className={intensity === value ? "active" : ""} onClick={() => setIntensity(value)}>{INTENSITY_LABELS[value]}</button>)}</div></label>
+          <div className="setting-field">听众强度<div className="segmented" role="group" aria-label="听众强度">{(["friendly", "balanced", "challenging"] as AudienceIntensity[]).map((value) => <button key={value} className={intensity === value ? "active" : ""} onClick={() => setIntensity(value)}>{INTENSITY_LABELS[value]}</button>)}</div></div>
           <div className="goal-box"><span>本轮目标</span><p>{scenario.goal}</p></div>
+          </div>
         </section>
 
+        <FloatingTools>
+        <PracticeClock elapsed={elapsed} practicing={isPracticing} />
         <section className="panel teleprompter-panel" ref={teleprompterRef}>
-          <div className="panel-head sticky-head"><div><p className="section-label">现场台词卡 · {ROUND_LABELS[teleprompterMode]}</p><h2>{scenario.title}</h2></div><button className="icon-button" title="全屏提词" onClick={() => teleprompterRef.current?.requestFullscreen()}><Maximize2 size={17} /></button></div>
+          <div className="sticky-head"><div className="panel-head"><div><p className="section-label">现场台词卡 · {ROUND_LABELS[teleprompterMode]}</p><h2>{scenario.title}</h2></div><button className="icon-button" title="全屏提词" onClick={() => teleprompterRef.current?.requestFullscreen()}><Maximize2 size={17} /></button></div>
           <div className="follow-toolbar">
             <div className="segmented two"><button className={scrollMode === "speech" ? "active" : ""} onClick={() => changeScrollMode("speech")}><Mic size={14} />语音跟随</button><button className={scrollMode === "manual" ? "active" : ""} onClick={() => changeScrollMode("manual")}><Play size={14} />匀速滚动</button></div>
             <div className="follow-progress"><span>{scrollMode === "speech" ? speechStatus : `速度 ${scrollSpeed}`}</span><i><b style={{ width: `${Math.round(speechProgress * 100)}%` }} /></i></div>
           </div>
+          </div>
           {teleprompterMode === "hidden" ? <div className="hidden-script"><EyeOff size={28} /><strong>台词已隐藏</strong><span>系统仍会记录识别进度。现在只依靠结构和现场感表达。</span></div> : <div className={`script-text ${teleprompterMode}`} style={{ fontSize: fontSize }}>{content.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`} data-teleprompter-section={index} className={index === activeSection ? "active" : ""}>{teleprompterMode === "cues" ? `${index + 1}. ${paragraph}` : paragraph}</p>)}</div>}
           <div className="teleprompter-tools"><label>字号 <input type="range" min="18" max="38" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /></label><label className={scrollMode === "speech" ? "disabled" : ""}>速度 <input type="range" min="0" max="5" value={scrollSpeed} disabled={scrollMode === "speech"} onChange={(event) => setScrollSpeed(Number(event.target.value))} /></label></div>
         </section>
+        </FloatingTools>
       </aside>
     </div>
   </>;
