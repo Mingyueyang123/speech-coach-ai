@@ -48,6 +48,7 @@ export interface TrainingGoal {
   language: TrainingLanguage;
   humorLevel: HumorLevel;
   successCriteria: string[];
+  actionSteps?: string[];
   knowledgeDocumentIds: string[];
   humorMaterialIds: string[];
   plan: GoalPlan;
@@ -61,6 +62,8 @@ export interface HumorMaterial {
   type: HumorMaterialType;
   title: string;
   content: string;
+  sourceText?: string;
+  coreIdea?: string;
   language: TrainingLanguage;
   scenarioKinds: ScenarioKind[];
   audienceBoundary: string;
@@ -73,9 +76,13 @@ export interface HumorMaterial {
 export interface AppPreferences {
   id: "app-preferences";
   cameraHeight: number;
+  cameraWidth?: number;
   cameraCollapsed: boolean;
+  sidebarCollapsed?: boolean;
+  devices?: { microphoneId: string; cameraId: string; outputId: string; cameraEnabled: boolean };
   scrollMode: ScrollMode;
   activeGoalId?: string;
+  selectedScenarioId?: string;
   onboardingDismissed: boolean;
   updatedAt: string;
 }
@@ -123,6 +130,7 @@ export interface MetricPoint {
 }
 
 export interface DeliveryMetrics {
+  visualAvailable?: boolean;
   wordsPerMinute: number;
   fillerCount: number;
   pauseCount: number;
@@ -144,6 +152,10 @@ export interface ConversationTurn {
 }
 
 export interface SessionRecord {
+  scenarioSnapshot?: PracticeScenario;
+  scriptVersionId?: string;
+  review?: ReviewReport;
+  reviewSource?: "ai" | "local";
   providers?: import("./providers/contracts").ProviderSnapshot;
   sceneEvents?: import("./immersive").SceneEvent[];
   immersiveScenarioId?: string;
@@ -161,6 +173,30 @@ export interface SessionRecord {
   metricTimeline: MetricPoint[];
   metrics: DeliveryMetrics;
   videoBlob?: Blob;
+}
+
+export interface ScriptVersion {
+  id: string;
+  scopeKey: string;
+  parentId?: string;
+  script: string;
+  cues: string[];
+  sourceDocumentIds: string[];
+  sourceSessionId?: string;
+  memoryIds: string[];
+  origin: "manual" | "knowledge" | "iteration" | "restore";
+  createdAt: string;
+}
+
+export interface CoachMemory {
+  id: string;
+  language: TrainingLanguage;
+  scenarioKind: ScenarioKind;
+  rule: string;
+  evidence: string;
+  kind: "keep" | "avoid";
+  sourceSessionIds: string[];
+  createdAt: string;
 }
 
 export interface ReviewReport {

@@ -18,6 +18,7 @@ describe("config migration and independent capabilities", () => {
     expect(resolveConfig({ OPENAI_API_KEY: "" }, { OPENAI_API_KEY: "env" }).OPENAI_API_KEY).toBe("");
     expect(configSchema.safeParse({ baseURL: "https://untrusted.example" }).success).toBe(false);
     expect(configSchema.safeParse({ ALIYUN_WORKSPACE_ID: "evil.com/path" }).success).toBe(false);
+    expect(configSchema.safeParse({ MINIMAX_API_KEY: "x".repeat(1200) }).success).toBe(true);
   });
 });
 describe("provider adapters", () => {
@@ -38,11 +39,12 @@ describe("provider adapters", () => {
     const output = await createSynthesizer(resolveConfig({ MINIMAX_API_KEY: "key", MINIMAX_VOICE_ID: "voice" }, {})).synthesize("Example?", "en-US");
     expect([...output]).toEqual([1, 2, 255, 170]);
     const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(fetch.mock.calls[0][0]).toBe("https://api.minimaxi.com/v1/t2a_v2");
     expect(body.language_boost).toBe("English"); expect(body.voice_setting.voice_id).toBe("voice"); expect(body).not.toHaveProperty("audio");
   });
   it("treats HTTP 200 business errors as failures", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ base_resp: { status_code: 1004, status_msg: "private" } })));
-    await expect(getVoices(resolveConfig({ MINIMAX_API_KEY: "key" }, {}))).rejects.toThrow("MiniMax 未通过");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ base_resp: { status_code: 1004, status_msg: "音色权限未开通" } })));
+    await expect(getVoices(resolveConfig({ MINIMAX_API_KEY: "key" }, {}))).rejects.toThrow("音色权限未开通");
   });
   it("does not call synthesis when disabled or unconfigured", async () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);

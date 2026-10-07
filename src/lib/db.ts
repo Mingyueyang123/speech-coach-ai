@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AppPreferences, HumorMaterial, KnowledgeDocument, SessionRecord, TrainingGoal, UserProfile } from "./types";
+import type { AppPreferences, HumorMaterial, KnowledgeDocument, SessionRecord, TrainingGoal, UserProfile, ScriptVersion, CoachMemory } from "./types";
 
 class SpeechCoachDatabase extends Dexie {
   documents!: EntityTable<KnowledgeDocument, "id">;
@@ -8,6 +8,8 @@ class SpeechCoachDatabase extends Dexie {
   goals!: EntityTable<TrainingGoal, "id">;
   humorMaterials!: EntityTable<HumorMaterial, "id">;
   preferences!: EntityTable<AppPreferences, "id">;
+  scriptVersions!: EntityTable<ScriptVersion, "id">;
+  coachMemories!: EntityTable<CoachMemory, "id">;
 
   constructor() {
     super("speech-coach-ai");
@@ -22,6 +24,10 @@ class SpeechCoachDatabase extends Dexie {
       goals: "id, scenarioKind, language, targetDate, updatedAt",
       humorMaterials: "id, type, language, createdAt, updatedAt",
       preferences: "id, updatedAt",
+    });
+    this.version(3).stores({
+      scriptVersions: "id, scopeKey, createdAt",
+      coachMemories: "id, language, scenarioKind, createdAt",
     });
   }
 }

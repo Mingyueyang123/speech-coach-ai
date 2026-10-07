@@ -59,10 +59,11 @@ export function buildLocalReview(
     75 - metrics.fillerCount * 4 - Math.max(0, metrics.wordsPerMinute - 260) / 4 + metrics.volumeVariation / 3,
   );
   const interaction = clampScore(45 + questionCount * 14 + (/请|please/i.test(transcript) ? 12 : 0));
-  const visualPresence = clampScore(
+  const hasVisual = metrics.visualAvailable !== false;
+  const visualPresence = hasVisual ? clampScore(
     metrics.cameraFacingRatio * 0.55 + metrics.handsVisibleRatio * 0.2 + (100 - metrics.bodySway) * 0.25,
-  );
-  const overallScore = clampScore((content + structure + delivery + interaction + visualPresence) / 5);
+  ) : 0;
+  const overallScore = clampScore((content + structure + delivery + interaction + (hasVisual ? visualPresence : 0)) / (hasVisual ? 5 : 4));
 
   if (scenario.language === "en-US") {
     return {
@@ -70,12 +71,12 @@ export function buildLocalReview(
       summary: `This round scored ${overallScore}. Prioritize “${scenario.rubric[0]}” and a stronger connection with the audience next.`,
       strengths: [
         content >= 70 ? "The central message was clear enough for the audience to follow." : "You completed a full attempt and created useful material to review.",
-        metrics.cameraFacingRatio >= 65 ? "You maintained a steady visual connection with the audience." : "Your delivery included visible changes in pace and emphasis.",
+        !hasVisual ? "This recording provides an audio baseline for the next round; visual delivery was not assessed." : metrics.cameraFacingRatio >= 65 ? "You maintained a steady visual connection with the audience." : "Your delivery included visible changes in pace and emphasis.",
         metrics.fillerCount <= 3 ? "Filler words were controlled and the language stayed clean." : "The key ideas are present and can now be made more concise.",
       ],
       improvements: [
         metrics.wordsPerMinute > 180 ? "Slow down around conclusions and numbers, leaving a short pause before and after them." : "Move the main claim earlier so the opening reaches the point faster.",
-        metrics.cameraFacingRatio < 65 ? "Reconnect with the camera at the end of each section instead of staying on the script." : "Reduce small body movement before key lines to create a steadier visual center.",
+        !hasVisual ? "Leave a deliberate pause after each key claim." : metrics.cameraFacingRatio < 65 ? "Reconnect with the camera at the end of each section instead of staying on the script." : "Reduce small body movement before key lines to create a steadier visual center.",
         interaction < 70 ? "Add one question the audience can answer immediately." : "After a question, leave enough silence for the audience to respond.",
       ],
       nextPractice: [
@@ -89,13 +90,13 @@ export function buildLocalReview(
 
   const strengths = [
     content >= 70 ? "内容主线比较清楚，听众能知道你希望他们记住什么。" : "已经完成了一轮完整表达，具备可复盘的素材。",
-    metrics.cameraFacingRatio >= 65 ? "面向镜头的比例较好，建立了稳定的听众连接。" : "表达过程中有明显的节奏变化，不是平铺直叙。",
+    !hasVisual ? "这份录音可作为下一轮对比的起点；本轮未评估视觉表现。" : metrics.cameraFacingRatio >= 65 ? "面向镜头的比例较好，建立了稳定的听众连接。" : "表达过程中有明显的节奏变化，不是平铺直叙。",
     metrics.fillerCount <= 3 ? "口头填充词控制得较好，语言显得干净。" : "关键观点已经出现，可以进一步压缩口头填充。",
   ];
 
   const improvements = [
     metrics.wordsPerMinute > 260 ? "整体语速偏快；在结论和数字前后主动停顿半秒。" : "把核心判断再提前，让开头更快进入主题。",
-    metrics.cameraFacingRatio < 65 ? "看提词卡时容易偏离镜头；每说完一段抬头完成一次听众连接。" : "在关键句前减少小幅晃动，让视觉重心更稳定。",
+    !hasVisual ? "每个关键观点后留一次清晰停顿，让听众有时间消化。" : metrics.cameraFacingRatio < 65 ? "看提词卡时容易偏离镜头；每说完一段抬头完成一次听众连接。" : "在关键句前减少小幅晃动，让视觉重心更稳定。",
     interaction < 70 ? "增加一个听众可以立即回答的问题或明确行动指令。" : "追问之后留出真正的等待，不要立刻替听众回答。",
   ];
 

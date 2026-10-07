@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FaceLandmarker, PoseLandmarker } from "@mediapipe/tasks-vision";
 import type { MetricPoint } from "@/lib/types";
+import { DEFAULT_DEVICES, mediaConstraints, recordingMimeType, type PracticeDevices } from "@/lib/media-devices";
 
 interface MediaSessionState {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -11,7 +12,7 @@ interface MediaSessionState {
   recording: boolean;
   visionStatus: string;
   error: string;
-  prepare: () => Promise<MediaStream>;
+  prepare: (devices?: PracticeDevices) => Promise<MediaStream>;
   startRecording: () => void;
   stopRecording: () => Promise<Blob | null>;
   stopCamera: () => void;
@@ -21,6 +22,8 @@ interface MediaSessionState {
 export function useMediaSession(): MediaSessionState {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const generationRef = useRef(0);
+  const pendingRef = useRef<Promise<MediaStream> | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const stopResolverRef = useRef<((blob: Blob | null) => void) | null>(null);
@@ -41,7 +44,7 @@ export function useMediaSession(): MediaSessionState {
 
   const sampleFrame = useCallback(function sampleFrameLoop() {
     const video = videoRef.current;
-    if (!video || video.readyState < 2) {
+    if (streamRef.current?.getVideoTracks().length && (!video || video.readyState < 2)) {
       frameHandleRef.current = requestAnimationFrame(sampleFrameLoop);
       return;
     }
@@ -56,7 +59,7 @@ export function useMediaSession(): MediaSessionState {
       let bodySway = 0;
 
       try {
-        const faceResult = faceRef.current?.detectForVideo(video, now);
+        const faceResult = video && video.readyState >= 2 ? faceRef.current?.detectForVideo(video, now) : undefined;
         const landmarks = faceResult?.faceLandmarks[0];
         if (landmarks) {
           const nose = landmarks[1];
@@ -71,7 +74,7 @@ export function useMediaSession(): MediaSessionState {
           expression = Math.min(1, smile + score("browInnerUp") * 0.5 + score("jawOpen") * 0.25);
         }
 
-        const poseResult = poseRef.current?.detectForVideo(video, now);
+        const poseResult = video && video.readyState >= 2 ? poseRef.current?.detectForVideo(video, now) : undefined;
         const pose = poseResult?.landmarks[0];
         if (pose) {
           const leftWrist = pose[15];
@@ -114,14 +117,17 @@ export function useMediaSession(): MediaSessionState {
     frameHandleRef.current = requestAnimationFrame(sampleFrameLoop);
   }, []);
 
-  const loadVision = useCallback(async () => {
+  const loadVision = useCallback(async (generation: number) => {
+    let face: FaceLandmarker | undefined;
+    let pose: PoseLandmarker | undefined;
     try {
       setVisionStatus("正在加载本地视觉模型");
       const { FilesetResolver, FaceLandmarker, PoseLandmarker } = await import("@mediapipe/tasks-vision");
       const fileset = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm",
       );
-      faceRef.current = await FaceLandmarker.createFromOptions(fileset, {
+      if (generation !== generationRef.current) return;
+      face = await FaceLandmarker.createFromOptions(fileset, {
         baseOptions: {
           modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
           delegate: "GPU",
@@ -130,7 +136,8 @@ export function useMediaSession(): MediaSessionState {
         numFaces: 1,
         outputFaceBlendshapes: true,
       });
-      poseRef.current = await PoseLandmarker.createFromOptions(fileset, {
+      if (generation !== generationRef.current) { face.close(); return; }
+      pose = await PoseLandmarker.createFromOptions(fileset, {
         baseOptions: {
           modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
           delegate: "GPU",
@@ -138,26 +145,32 @@ export function useMediaSession(): MediaSessionState {
         runningMode: "VIDEO",
         numPoses: 1,
       });
+      if (generation !== generationRef.current) { face.close(); pose.close(); return; }
+      faceRef.current = face;
+      poseRef.current = pose;
       setVisionStatus("视觉分析仅在本机运行");
     } catch {
-      setVisionStatus("视觉模型不可用，录像与语音仍可使用");
+      face?.close(); pose?.close();
+      if (generation === generationRef.current) setVisionStatus("视觉模型不可用，录像与语音仍可使用");
     }
   }, []);
 
-  const prepare = useCallback(async () => {
+  const prepare = useCallback(async (devices: PracticeDevices = DEFAULT_DEVICES) => {
     if (streamRef.current) return streamRef.current;
+    if (pendingRef.current) return pendingRef.current;
+    const generation = generationRef.current;
     setError("");
+    const pending = (async () => {
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
+      const mediaStream = await navigator.mediaDevices.getUserMedia(mediaConstraints(devices));
+      if (generation !== generationRef.current) { mediaStream.getTracks().forEach(track => track.stop()); throw new Error("设备设置已变更，请重新开始。"); }
       streamRef.current = mediaStream;
       setStream(mediaStream);
-      if (videoRef.current) {
+      if (videoRef.current && mediaStream.getVideoTracks().length) {
         videoRef.current.srcObject = mediaStream;
         await videoRef.current.play();
       }
+      if (generation !== generationRef.current) { mediaStream.getTracks().forEach(track => track.stop()); throw new Error("媒体接入已取消。"); }
       const context = new AudioContext();
       const source = context.createMediaStreamSource(mediaStream);
       const analyser = context.createAnalyser();
@@ -165,15 +178,24 @@ export function useMediaSession(): MediaSessionState {
       source.connect(analyser);
       analyserRef.current = analyser;
       audioContextRef.current = context;
-      setCameraReady(true);
-      void loadVision();
+      setCameraReady(mediaStream.getVideoTracks().length > 0);
+      if (mediaStream.getVideoTracks().length) void loadVision(generation);
+      else setVisionStatus("仅录音 · 未进行视觉分析");
       frameHandleRef.current = requestAnimationFrame(sampleFrame);
       return mediaStream;
     } catch (cause) {
+      if (generation === generationRef.current) {
+        streamRef.current?.getTracks().forEach(track => track.stop());
+        streamRef.current = null; setStream(null); setCameraReady(false);
+      }
       const message = cause instanceof Error ? cause.message : "无法访问摄像头或麦克风。";
       setError(message);
       throw cause;
     }
+    })();
+    pendingRef.current = pending;
+    try { return await pending; }
+    finally { if (pendingRef.current === pending) pendingRef.current = null; }
   }, [loadVision, sampleFrame]);
 
   const startRecording = useCallback(() => {
@@ -181,15 +203,13 @@ export function useMediaSession(): MediaSessionState {
     if (!mediaStream || recording) return;
     chunksRef.current = [];
     timelineRef.current = [];
-    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-      ? "video/webm;codecs=vp9,opus"
-      : "video/webm";
-    const recorder = new MediaRecorder(mediaStream, { mimeType });
+    const mimeType = recordingMimeType(mediaStream.getVideoTracks().length > 0, type => MediaRecorder.isTypeSupported(type));
+    const recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
     recorder.ondataavailable = (event) => {
       if (event.data.size) chunksRef.current.push(event.data);
     };
     recorder.onstop = () => {
-      const blob = chunksRef.current.length ? new Blob(chunksRef.current, { type: mimeType }) : null;
+      const blob = chunksRef.current.length ? new Blob(chunksRef.current, { type: recorder.mimeType || chunksRef.current[0].type }) : null;
       stopResolverRef.current?.(blob);
       stopResolverRef.current = null;
     };
@@ -209,6 +229,8 @@ export function useMediaSession(): MediaSessionState {
   }, []);
 
   const stopCamera = useCallback(() => {
+    generationRef.current += 1;
+    pendingRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setStream(null);
@@ -219,6 +241,7 @@ export function useMediaSession(): MediaSessionState {
     poseRef.current?.close();
     faceRef.current = null;
     poseRef.current = null;
+    setVisionStatus("视觉分析待机");
   }, []);
 
   useEffect(() => stopCamera, [stopCamera]);

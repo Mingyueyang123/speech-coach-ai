@@ -18,7 +18,8 @@ test("keeps the teleprompter mapped to the selected scenario", async ({ page }) 
 test("switches the full practice chain to English", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "暂时跳过" }).click();
-  await page.getByRole("button", { name: "English" }).click();
+  await page.getByRole("button", { name: "训练语言", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "英文" }).click();
   await expect(page.getByRole("heading", { name: "Investor Pitch", level: 2 })).toBeVisible();
   await expect(page.getByText("Hello, I am building an AI product", { exact: false })).toBeVisible();
 });
@@ -45,6 +46,7 @@ test("records locally and never posts video or landmark data", async ({ page, co
   await page.goto("/");
   await page.getByRole("button", { name: "暂时跳过" }).click();
   await page.getByRole("button", { name: "用这段练习" }).click();
+  await page.getByRole("button", { name: "开始本轮", exact: true }).click();
   await expect(page.getByRole("button", { name: "结束并复盘" })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "收起摄像头" }).click();
   await expect(page.getByRole("heading", { name: "画面已收起 · 仍在录制" })).toBeVisible();

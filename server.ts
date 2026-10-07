@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { createSpeechGateway } from "./server/speech-gateway";
+import { trustedBrowserRequest } from "./src/lib/request-origin";
 
 const args = process.argv.slice(2);
 const option = (long: string, short: string) => { const index = args.findIndex(a => a === long || a === short); return index >= 0 ? args[index + 1] : undefined; };
@@ -18,8 +19,8 @@ async function main() {
   const server = createServer((request, response) => {
     const path = request.url?.split("?")[0];
     const host = request.headers.host;
-    if (path?.startsWith("/api/") && (!host || !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host) || (request.method !== "GET" && request.headers.origin !== `http://${host}`))) {
-      response.writeHead(403, { "Content-Type": "application/json" }); response.end(JSON.stringify({ error: "仅允许本机同源访问" })); return;
+    if (path?.startsWith("/api/") && !trustedBrowserRequest({ host, origin: request.headers.origin, method: request.method, remoteAddress: request.socket.remoteAddress })) {
+      response.writeHead(403, { "Content-Type": "application/json" }); response.end(JSON.stringify({ error: "仅允许受信任的同源访问" })); return;
     }
     if (path === "/api/speech/session") { void gateway.session(request, response); return; }
     void handler(request, response);

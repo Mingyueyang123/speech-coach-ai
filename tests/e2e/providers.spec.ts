@@ -42,8 +42,12 @@ for (const language of ["zh-CN", "en-US"] as const) test(`continuous ${language}
   const mock = await setup(page, spoken);
   const requests: { url: string; body: string }[] = [];
   page.on("request", request => { if (request.method() === "POST") requests.push({ url: request.url(), body: request.postData() ?? "" }); });
-  if (language === "en-US") await page.getByRole("button", { name: "English", exact: true }).click();
+  if (language === "en-US") {
+    await page.getByRole("button", { name: "训练语言", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "英文" }).click();
+  }
   await page.getByRole("button", { name: "用这段练习" }).click();
+  await page.getByRole("button", { name: "开始本轮", exact: true }).click();
   await expect(page.getByText(spoken, { exact: true }).last()).toBeVisible({ timeout: 20000 });
   await expect(page.getByText(/已跟随 \d+%/)).toBeVisible();
   expect(requests.filter(r => r.url.endsWith("/api/audience"))).toHaveLength(0);
@@ -55,13 +59,14 @@ for (const language of ["zh-CN", "en-US"] as const) test(`continuous ${language}
   const endedFrames = mock.counts().audioFrames; await page.waitForTimeout(400);
   expect(mock.counts().audioFrames).toBe(endedFrames); expect(mock.counts().closes).toBe(1);
   for (const request of requests) expect(request.body).not.toMatch(/videoBlob|faceLandmarks|poseLandmarks|m=video|metricTimeline/);
-  await page.reload(); await expect(page.getByText("Speech Coach AI", { exact: true })).toBeVisible();
+  await page.reload(); await expect(page.getByText("Speech Coach", { exact: true })).toBeVisible();
 });
 
 test("disconnect preserves text and only reconnects on request", async ({ page, context }) => {
   await context.grantPermissions(["camera", "microphone"]);
   const mock = await setup(page, "我们需要一个具体的例子。", true);
   await page.getByRole("button", { name: "用这段练习" }).click();
+  await page.getByRole("button", { name: "开始本轮", exact: true }).click();
   await expect(page.getByRole("button", { name: "重连识别" })).toBeVisible();
   expect(mock.counts().connections).toBe(1);
   await page.getByRole("button", { name: "重连识别" }).click();

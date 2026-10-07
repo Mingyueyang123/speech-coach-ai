@@ -5,12 +5,15 @@ import WebSocket, { WebSocketServer } from "ws";
 import { z } from "zod";
 import { getConfig, recordProviderCheck, type ServerConfig } from "../src/lib/server-config";
 import { parseAliSentence, speechStartSchema } from "../src/lib/providers/speech-protocol";
+import { trustedBrowserRequest } from "../src/lib/request-origin";
 
 export function localOrigin(request: IncomingMessage) {
-  const host = request.headers.host;
-  return Boolean(host && /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host)
-    && request.headers.origin === `http://${host}`
-    && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? ""));
+  return trustedBrowserRequest({
+    host: request.headers.host,
+    origin: request.headers.origin,
+    method: request.method,
+    remoteAddress: request.socket.remoteAddress,
+  });
 }
 const sessionSchema = z.object({ provider: z.literal("aliyun") }).strict();
 export function createSpeechGateway() {

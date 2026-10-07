@@ -6,6 +6,7 @@ import { z } from "zod";
 export const runtime = "nodejs";
 
 const metricsSchema = z.object({
+  visualAvailable: z.boolean().optional(),
   wordsPerMinute: z.number(), fillerCount: z.number(), pauseCount: z.number(),
   averageVolume: z.number(), volumeVariation: z.number(), cameraFacingRatio: z.number(),
   expressionRange: z.number(), smileRatio: z.number(), handsVisibleRatio: z.number(),
@@ -45,6 +46,7 @@ export async function POST(request: Request) {
     isEnglish ? "You are a professional English speech coach. Review the transcript using observable metrics and the scenario goal." : "你是专业中文演讲教练。请基于转写、可观察指标和场景目标生成复盘。",
     isEnglish ? "Do not rate the speaker's accent. Focus on clarity, fluency, pacing, structure, and audience connection." : "英文模式不评价口音；中文模式也不做身份或地域推断。",
     "不要从面部和姿态推断心理、人格、疾病或是否诚实；只描述可观察行为。",
+    parsed.data.metrics.visualAvailable === false ? "本轮没有可用视觉分析。忽略全部视觉数值，不评价或推测眼神、表情、手势和姿态；visualPresence 填 0 表示未评估，总分只计其余四项。" : "",
     isEnglish ? "All scores are 0-100. Return strict JSON without Markdown, with all feedback text in English." : "分数均为 0-100。必须严格输出 JSON，不要 Markdown。",
     `场景：${parsed.data.scenario.title}`,
     `目标：${parsed.data.scenario.goal}`,

@@ -19,3 +19,21 @@ it("preserves old recordings and documents while accepting optional provider sna
   await db.sessions.put({ ...record, id: "new-round", providers: { text: "deepseek", recognition: "aliyun", synthesis: "minimax", textModel: "deepseek-flash", recognitionModel: "qwen-audio-3.1-asr-flash-streaming", synthesisModel: "speech-2.8-turbo" } });
   db.close(); await db.open(); expect(await db.sessions.count()).toBe(2);
 });
+
+it("upgrades v2 without rewriting private goals and retains frozen scripts and memory on reload", async () => {
+  const previous = new Dexie("speech-coach-ai");
+  previous.version(2).stores({ documents: "id, source, title, createdAt, updatedAt", sessions: "id, scenarioId, goalId, language, startedAt", profiles: "id, updatedAt", goals: "id, scenarioKind, language, targetDate, updatedAt", humorMaterials: "id, type, language, createdAt, updatedAt", preferences: "id, updatedAt" });
+  await previous.table("goals").put({ id: "private-goal", plan: { script: "不要丢失旧台本" } });
+  await previous.table("preferences").put({ id: "app-preferences", cameraHeight: 420 });
+  previous.close();
+  await db.open();
+  expect((await db.goals.get("private-goal"))?.plan.script).toBe("不要丢失旧台本");
+  expect((await db.preferences.get("app-preferences"))?.cameraHeight).toBe(420);
+  await db.scriptVersions.add({ id: "v1", scopeKey: "pitch", script: "这是第一版台本。", cues: ["开场"], sourceDocumentIds: [], memoryIds: [], origin: "manual", createdAt: "2026-01-01" });
+  await db.scriptVersions.add({ id: "v2", parentId: "v1", scopeKey: "pitch", script: "这是第二版台本。", cues: ["开场"], sourceDocumentIds: [], memoryIds: ["memory"], origin: "iteration", createdAt: "2026-01-02" });
+  await db.coachMemories.put({ id: "memory", rule: "先讲例子", evidence: "一个例子", kind: "keep", language: "zh-CN", scenarioKind: "investor-pitch", sourceSessionIds: ["best"], createdAt: "2026-01-01" });
+  db.close(); await db.open();
+  expect((await db.scriptVersions.get("v1"))?.script).toBe("这是第一版台本。");
+  expect((await db.scriptVersions.get("v2"))?.parentId).toBe("v1");
+  expect((await db.coachMemories.get("memory"))?.sourceSessionIds).toEqual(["best"]);
+});

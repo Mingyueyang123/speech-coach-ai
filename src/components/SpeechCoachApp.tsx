@@ -1,11 +1,11 @@
 "use client";
 
 import {
-  ArrowRight, Camera, Check, ChevronDown, ChevronRight, ChevronUp,
-  CircleStop, Download, EyeOff, FileText, Gauge, GripHorizontal, Import,
-  Languages, Library, Lightbulb, Maximize2, MessageCircle, Mic, Play, Send,
-  Power, Settings, RotateCcw, ShieldCheck, Sparkles, Target, Trash2, Upload, Users, Video,
-  X,
+  ArrowRight, Camera, Check, ChevronRight,
+  CircleStop, Download, EyeOff, FileText, Gauge, Import,
+  Library, Lightbulb, MessageCircle, Mic, Play, Send, ChevronLeft,
+  Power, Settings, RotateCcw, ShieldCheck, Target, Trash2, Upload, Users, Video,
+  X, Pencil, BookOpen, GitCompareArrows,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiSettings } from "@/components/ApiSettings";
@@ -14,6 +14,10 @@ import { startRecognizer } from "@/lib/speech-client";
 import { AudiencePlayer } from "@/lib/audience-player";
 import type { SettingsStatus, SpeechRecognizer, ProviderSnapshot } from "@/lib/providers/contracts";
 import { FloatingTools, PracticeClock } from "@/components/FloatingTools";
+import { PracticeDock } from "@/components/PracticeDock";
+import { ScriptStudio, type ScriptSave } from "@/components/ScriptStudio";
+import { relevantMemories } from "@/lib/script-coach";
+import { DEFAULT_DEVICES, type PracticeDevices } from "@/lib/media-devices";
 import { useMediaSession } from "@/hooks/useMediaSession";
 import { buildLocalReview, calculateDeliveryMetrics } from "@/lib/analysis";
 import { db } from "@/lib/db";
@@ -26,13 +30,13 @@ import type {
   AppPreferences, AudienceIntensity, ConversationTurn, GoalPlan,
   HumorMaterial, KnowledgeDocument, PracticeScenario,
   ReviewReport, ScenarioKind, ScrollMode, SessionRecord, TeleprompterMode,
-  TrainingGoal, TrainingLanguage, UserProfile,
+  TrainingGoal, TrainingLanguage, UserProfile, ScriptVersion, CoachMemory,
 } from "@/lib/types";
 
 type AppTab = "practice" | "goals" | "knowledge" | "humor" | "review" | "settings";
 
 const DEFAULT_PREFERENCES: AppPreferences = {
-  id: "app-preferences", cameraHeight: 420, cameraCollapsed: false,
+  id: "app-preferences", cameraHeight: 420, cameraWidth: 0, cameraCollapsed: false,
   scrollMode: "speech", onboardingDismissed: false, updatedAt: new Date(0).toISOString(),
 };
 
@@ -45,14 +49,13 @@ const TAB_LABELS: Array<{ id: AppTab; label: string; icon: typeof Mic }> = [
   { id: "settings", label: "API 配置", icon: Settings },
 ];
 
-const INTENSITY_LABELS: Record<AudienceIntensity, string> = { friendly: "友好", balanced: "正常", challenging: "挑战" };
 const ROUND_LABELS: Record<TeleprompterMode, string> = { full: "完整台词", cues: "关键词", hidden: "脱稿" };
 const SCENARIO_LABELS: Record<ScenarioKind, string> = { "investor-pitch": "投资人 Pitch", "client-roadshow": "客户路演", "live-speaking": "线下演讲 / 主持" };
 function formatTime(totalSeconds: number): string {
   return `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
 }
 
-function MetricCard({ label, value, suffix = "" }: { label: string; value: number; suffix?: string }) {
+function MetricCard({ label, value, suffix = "" }: { label: string; value: number | string; suffix?: string }) {
   return <div className="metric-card"><span>{label}</span><strong>{value}{suffix}</strong></div>;
 }
 
@@ -82,11 +85,16 @@ export function SpeechCoachApp() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [latestSession, setLatestSession] = useState<SessionRecord | null>(null);
   const [review, setReview] = useState<ReviewReport | null>(null);
-  const [notice, setNotice] = useState("先选择目标和训练轮次，再开启摄像头开始练习。");
+  const [notice, setNotice] = useState("");
   const [feishuUrl, setFeishuUrl] = useState("");
   const [knowledgeBusy, setKnowledgeBusy] = useState(false);
   const [goalBusy, setGoalBusy] = useState(false);
   const [aiStatus, setAiStatus] = useState("真实听众待机");
+  const [targetDuration, setTargetDuration] = useState<number | null>(null);
+  const [scriptVersions, setScriptVersions] = useState<ScriptVersion[]>([]);
+  const [coachMemories, setCoachMemories] = useState<CoachMemory[]>([]);
+  const [studio, setStudio] = useState<{ scenario: PracticeScenario; tab: "edit" | "sources" | "learn"; sessionId?: string } | null>(null);
+  const practiceScriptRef = useRef<{ scenario: PracticeScenario; versionId?: string } | null>(null);
 
   const teleprompterRef = useRef<HTMLElement>(null);
   const recognitionRef = useRef<SpeechRecognizer | null>(null);
@@ -100,6 +108,12 @@ export function SpeechCoachApp() {
   const practicingRef = useRef(false);
   const startingRef = useRef(false);
   const stoppingRef = useRef(false);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scrollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef(0);
@@ -120,15 +134,15 @@ export function SpeechCoachApp() {
   );
 
   const baseScenario = getScenario(scenarioId);
-  const scenario = useMemo<PracticeScenario>(() => {
-    if (!activeGoal) return baseScenario;
+  const sourceScenario = useMemo<PracticeScenario>(() => {
+    if (!activeGoal) return { ...baseScenario, durationSeconds: targetDuration ?? baseScenario.durationSeconds };
     const base = getScenarioByKind(activeGoal.scenarioKind, activeGoal.language);
     return {
       ...base,
       id: `${base.id}:${activeGoal.id}`,
       title: activeGoal.title,
       goal: activeGoal.desiredOutcome,
-      durationSeconds: activeGoal.durationSeconds,
+      durationSeconds: targetDuration ?? activeGoal.durationSeconds,
       audiencePersona: activeGoal.plan.audiencePersona,
       script: activeGoal.plan.script,
       cues: activeGoal.plan.cues,
@@ -136,36 +150,44 @@ export function SpeechCoachApp() {
       rubric: activeGoal.plan.rubric,
       knowledgeDocumentIds: activeGoal.knowledgeDocumentIds,
     };
-  }, [activeGoal, baseScenario]);
+  }, [activeGoal, baseScenario, targetDuration]);
+  const activeScriptVersion = scriptVersions.find(v => v.scopeKey === sourceScenario.id);
+  const scenario = useMemo(() => activeScriptVersion ? { ...sourceScenario, script: activeScriptVersion.script, cues: activeScriptVersion.cues, knowledgeDocumentIds: activeScriptVersion.sourceDocumentIds } : sourceScenario, [sourceScenario, activeScriptVersion]);
 
   const teleprompterMode: TeleprompterMode = roundIndex === 1 ? "full" : roundIndex === 2 ? "cues" : "hidden";
   const scriptParagraphs = useMemo(() => scenario.script.split(/\n\s*\n/).filter(Boolean), [scenario.script]);
   const activeSection = progressToSection(speechProgress, teleprompterMode === "cues" ? scenario.cues.length : scriptParagraphs.length);
   const knowledgeContext = useMemo(() => {
-    const selected = activeGoal?.knowledgeDocumentIds.length
-      ? documents.filter((document) => activeGoal.knowledgeDocumentIds.includes(document.id))
+    const selected = activeScriptVersion || scenario.knowledgeDocumentIds.length
+      ? documents.filter((document) => scenario.knowledgeDocumentIds.includes(document.id))
       : documents;
     return searchKnowledge(selected, `${scenario.title} ${scenario.goal}`).map((chunk) => chunk.text).join("\n\n").slice(0, 10000);
-  }, [activeGoal, documents, scenario.goal, scenario.title]);
+  }, [activeScriptVersion, documents, scenario.goal, scenario.title, scenario.knowledgeDocumentIds]);
 
   const reloadLocalData = useCallback(async () => {
-    const [storedDocuments, storedSessions, storedGoals, storedHumor, storedProfile, storedPreferences] = await Promise.all([
+    const [storedDocuments, storedSessions, storedGoals, storedHumor, storedProfile, storedPreferences, storedVersions, storedMemories] = await Promise.all([
       db.documents.orderBy("updatedAt").reverse().toArray(),
       db.sessions.orderBy("startedAt").reverse().toArray(),
       db.goals.orderBy("updatedAt").reverse().toArray(),
       db.humorMaterials.orderBy("updatedAt").reverse().toArray(),
       db.profiles.get("local-profile"),
       db.preferences.get("app-preferences"),
+      db.scriptVersions.orderBy("createdAt").reverse().toArray(),
+      db.coachMemories.orderBy("createdAt").reverse().toArray(),
     ]);
     const nextPreferences = storedPreferences ?? DEFAULT_PREFERENCES;
     setDocuments(storedDocuments);
     setSessions(storedSessions);
+    setScriptVersions(storedVersions);
+    setCoachMemories(storedMemories);
     setGoals(storedGoals);
     setHumorMaterials(storedHumor);
     setProfile(storedProfile ?? null);
     setPreferences(nextPreferences);
+    if (nextPreferences.selectedScenarioId) setScenarioId(getScenario(nextPreferences.selectedScenarioId).id);
     setScrollMode(nextPreferences.scrollMode);
     setLatestSession((current) => current ?? storedSessions[0] ?? null);
+    setReview(current => current ?? storedSessions[0]?.review ?? null);
     setOnboardingOpen(!storedProfile && !nextPreferences.onboardingDismissed);
   }, []);
 
@@ -270,8 +292,8 @@ export function SpeechCoachApp() {
 
   const prepareCamera = async () => {
     try {
-      await prepareMedia();
-      setNotice("摄像头已准备。收起画面不会停止录像或本地分析。");
+      await prepareMedia(preferences.devices ?? DEFAULT_DEVICES);
+      setNotice(preferences.devices?.cameraEnabled === false ? "麦克风已准备，本轮仅录音。" : "摄像头已准备。收起画面不会停止录像或本地分析。");
     } catch {
       setNotice("无法访问摄像头或麦克风，请检查浏览器权限。");
     }
@@ -279,9 +301,11 @@ export function SpeechCoachApp() {
 
   const startPractice = async () => {
     if (startingRef.current || stoppingRef.current || practicingRef.current) return;
+    if (studio) { setNotice("请先保存或关闭台本编辑，再开始练习。"); return; }
     startingRef.current = true;
+    practiceScriptRef.current = { scenario: structuredClone(scenario), versionId: activeScriptVersion?.id };
     try {
-      const stream = await prepareMedia();
+      const stream = await prepareMedia(preferences.devices ?? DEFAULT_DEVICES);
       resetPractice();
       startedAtRef.current = Date.now();
       startRecording();
@@ -302,8 +326,9 @@ export function SpeechCoachApp() {
         setAiStatus(cause instanceof Error ? cause.message : "无法读取语音配置");
         setRecognitionDisconnected(true);
       }
-    } catch {
-      setNotice("练习未开始：需要允许摄像头和麦克风权限。");
+    } catch (cause) {
+      stopCamera();
+      setNotice(`练习未开始：${cause instanceof Error ? cause.message : "请检查设备权限和录制支持。"}`);
     } finally { startingRef.current = false; }
   };
 
@@ -322,7 +347,7 @@ export function SpeechCoachApp() {
       setAiStatus(data.source === "local" ? "本地模板问题 · 所选文本服务不可用" : "AI 听众提问 · 合成声音");
       if (providerRef.current?.bindings.synthesis !== "off") {
         audiencePlayer.current ??= new AudiencePlayer();
-        await audiencePlayer.current.play(data.question, scenario.language, controller.signal);
+        await audiencePlayer.current.play(data.question, scenario.language, controller.signal, preferences.devices?.outputId ?? "");
       }
     } catch (e) { if (!controller.signal.aborted) setAiStatus(e instanceof Error ? e.message : "听众回应失败"); }
   };
@@ -345,7 +370,10 @@ export function SpeechCoachApp() {
     const metricTimeline = getMetricTimeline();
     const transcript = spokenTextRef.current.trim();
     const metrics = calculateDeliveryMetrics(transcript, durationMs, metricTimeline, scenario.language);
+    metrics.visualAvailable = cameraReady && visionStatus === "视觉分析仅在本机运行";
     const session: SessionRecord = {
+      scenarioSnapshot: practiceScriptRef.current?.scenario,
+      scriptVersionId: practiceScriptRef.current?.versionId,
       id: crypto.randomUUID(), scenarioId: scenario.id.split(":")[0], goalId: activeGoal?.id,
       roundMode: teleprompterMode, roundIndex, language: scenario.language,
       providers: snapshotRef.current,
@@ -366,6 +394,11 @@ export function SpeechCoachApp() {
       if (response.ok) { nextReview = await response.json() as ReviewReport; localReview = false; }
     } catch { /* Local review remains available offline. */ }
     if (localReview) nextReview = { ...nextReview, summary: `${scenario.language === "en-US" ? "Local template review: " : "本地模板复盘："}${nextReview.summary}` };
+    session.review = nextReview;
+    session.reviewSource = localReview ? "local" : "ai";
+    await db.sessions.put(session);
+    setLatestSession({ ...session });
+    setSessions(current => current.map(item => item.id === session.id ? { ...session } : item));
     setReview(nextReview);
 
     if (activeGoal) {
@@ -386,27 +419,30 @@ export function SpeechCoachApp() {
   };
 
   const selectRound = (index: 1 | 2 | 3) => {
-    if (isPracticing) return;
+    if (isPracticing || startingRef.current || stoppingRef.current) return;
     setRoundIndex(index);
     resetPractice();
     setActiveTab("practice");
   };
 
   const chooseScenario = (kind: ScenarioKind, language: TrainingLanguage) => {
-    if (isPracticing) return;
+    if (isPracticing || startingRef.current || stoppingRef.current) return;
+    setTargetDuration(null);
     const selected = getScenarioByKind(kind, language);
     setScenarioId(selected.id);
     setRoundIndex(1);
-    void savePreferences({ activeGoalId: undefined });
+    void savePreferences({ activeGoalId: undefined, selectedScenarioId: selected.id });
     resetPractice();
     setActiveTab("practice");
   };
 
   const chooseGoal = async (goal: TrainingGoal) => {
+    if (isPracticing || startingRef.current || stoppingRef.current) { setNotice("请先结束本轮练习，再切换目标。"); return; }
+    setTargetDuration(null);
     const next = nextRoundIndex(goal);
     setScenarioId(getScenarioByKind(goal.scenarioKind, goal.language).id);
     setRoundIndex(next);
-    await savePreferences({ activeGoalId: goal.id });
+    await savePreferences({ activeGoalId: goal.id, selectedScenarioId: getScenarioByKind(goal.scenarioKind, goal.language).id });
     resetPractice();
     setActiveTab("practice");
     setNotice(`已载入目标“${goal.title}”，从第 ${next} 轮开始。`);
@@ -415,27 +451,6 @@ export function SpeechCoachApp() {
   const changeScrollMode = (mode: ScrollMode) => {
     setSpeechStatus(mode === "speech" ? "等待语音" : "匀速滚动");
     void savePreferences({ scrollMode: mode });
-  };
-
-  const toggleCameraCollapsed = () => void savePreferences({ cameraCollapsed: !preferences.cameraCollapsed });
-
-  const beginCameraResize = (event: React.PointerEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = preferences.cameraHeight;
-    const max = window.innerWidth <= 720 ? 480 : 720;
-    const move = (moveEvent: PointerEvent) => {
-      const next = Math.max(220, Math.min(max, startHeight + moveEvent.clientY - startY));
-      setPreferences((current) => ({ ...current, cameraHeight: next }));
-    };
-    const end = (endEvent: PointerEvent) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-      const next = Math.max(220, Math.min(max, startHeight + endEvent.clientY - startY));
-      void savePreferences({ cameraHeight: next });
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", end);
   };
 
   const importFiles = async (files: FileList | null) => {
@@ -479,21 +494,47 @@ export function SpeechCoachApp() {
     const url = URL.createObjectURL(session.videoBlob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `speech-coach-${session.startedAt.replace(/[:.]/g, "-")}.webm`;
+    anchor.download = `speech-coach-${session.startedAt.replace(/[:.]/g, "-")}.${session.videoBlob.type.includes("mp4") ? "mp4" : "webm"}`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
 
-  const headerTitle = activeTab === "practice" ? scenario.description
-    : activeTab === "goals" ? "目标中心"
-      : activeTab === "knowledge" ? "知识库"
-        : activeTab === "humor" ? "灵感素材库"
-          : activeTab === "settings" ? "API 配置" : "练习复盘";
+  const openStudio = (tab: "edit" | "sources" | "learn", record?: SessionRecord) => {
+    if (practicingRef.current || startingRef.current || stoppingRef.current) { setNotice("请先结束本轮，再编辑台本。"); return; }
+    const target = record?.scenarioSnapshot ?? scenario;
+    const version = scriptVersions.find(v => v.scopeKey === target.id);
+    setStudio({ scenario: version ? { ...target, script: version.script, cues: version.cues, knowledgeDocumentIds: version.sourceDocumentIds } : target, tab, sessionId: record?.id });
+  };
+  const saveScript = async (value: ScriptSave) => {
+    if (!studio || practicingRef.current || startingRef.current || stoppingRef.current) throw new Error("请先结束本轮，再保存台本。");
+    const target = studio.scenario;
+    const base = getScenarioByKind(target.kind, target.language);
+    const goal = goals.find(g => `${base.id}:${g.id}` === target.id);
+    if (target.id.includes(":") && !goal) throw new Error("关联目标不存在，无法覆盖这份台本。");
+    const parent = scriptVersions.find(v => v.scopeKey === target.id);
+    const timestamp = Math.max(Date.now(), parent ? Date.parse(parent.createdAt) + 1 : 0);
+    const baseline: ScriptVersion | null = parent ? null : { id: crypto.randomUUID(), scopeKey: target.id, script: target.script, cues: target.cues, sourceDocumentIds: target.knowledgeDocumentIds, memoryIds: [], origin: "manual", createdAt: new Date(timestamp - 1).toISOString() };
+    const version: ScriptVersion = { ...value, id: crypto.randomUUID(), scopeKey: target.id, parentId: parent?.id ?? baseline?.id, createdAt: new Date(timestamp).toISOString() };
+    const updatedGoal = goal ? { ...goal, plan: { ...goal.plan, script: value.script, cues: value.cues }, knowledgeDocumentIds: value.sourceDocumentIds, rounds: createPracticeRounds(), updatedAt: version.createdAt } : null;
+    await db.transaction("rw", db.scriptVersions, db.goals, async () => {
+      const latest = (await db.scriptVersions.where("scopeKey").equals(target.id).sortBy("createdAt")).at(-1);
+      if (latest?.id !== parent?.id) throw new Error("台本已在另一窗口更新，请关闭编辑器并刷新后重试。你的草稿仍在这里。");
+      if (baseline) await db.scriptVersions.add(baseline);
+      await db.scriptVersions.add(version);
+      if (updatedGoal) await db.goals.put(updatedGoal);
+    });
+    setScriptVersions(current => [version, ...(baseline ? [baseline] : []), ...current]);
+    if (updatedGoal) setGoals(current => current.map(g => g.id === updatedGoal.id ? updatedGoal : g));
+    await savePreferences({ activeGoalId: goal?.id, selectedScenarioId: base.id });
+    setScenarioId(base.id); setTargetDuration(target.durationSeconds); setRoundIndex(1); resetPractice(); setActiveTab("practice");
+    setNotice("新台本已保存，三轮练习从这份稿子重新开始；历史表现与原稿快照保持不变。");
+  };
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${preferences.sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
-        <div className="brand-block"><div className="brand-mark"><Mic size={20} /></div><div><strong>Speech Coach AI</strong><span>本地优先的演讲陪练</span></div></div>
+        <button className="icon-button sidebar-edge-toggle" title={preferences.sidebarCollapsed ? "展开侧栏" : "收起侧栏"} aria-expanded={!preferences.sidebarCollapsed} onClick={() => void savePreferences({ sidebarCollapsed: !preferences.sidebarCollapsed })}>{preferences.sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}</button>
+        <div className="brand-block"><div className="brand-mark"><Mic size={20} /></div><div><strong>Speech Coach</strong></div></div>
         <nav className="main-nav" aria-label="主导航">
           {TAB_LABELS.map(({ id, label, icon: Icon }) => (
             <button key={id} aria-label={label} title={label} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>
@@ -509,25 +550,23 @@ export function SpeechCoachApp() {
             </button>
           ))}
         </div>
-        <div className="privacy-note"><ShieldCheck size={18} /><div><strong>录像只留本机</strong><span>视频帧与关键点不会发送给 AI</span></div></div>
+        <div className="privacy-note" title="录像仅保存在本机，视频帧与关键点不会发送给 AI"><ShieldCheck size={18} /></div>
       </aside>
 
       <section className="workspace">
-        <header className="topbar">
-          <div><p className="eyebrow">{activeGoal ? `目标 · ${activeGoal.title}` : scenario.title}</p><h1>{headerTitle}</h1></div>
-          <div className="topbar-status"><span className={isPracticing ? "live-dot active" : "live-dot"} />{isPracticing ? `录制中 ${formatTime(elapsed)}` : "本地待机"}</div>
-        </header>
-        <div className="notice-bar"><Sparkles size={16} /><span>{notice}</span></div>
-
-        <div hidden={activeTab !== "practice"}>
+        <div className={activeTab !== "practice" ? "practice-away" : ""}>
           <PracticeView
+            editScript={() => openStudio("edit")} importScript={() => openStudio("sources")}
+            visible={activeTab === "practice"} devices={preferences.devices ?? DEFAULT_DEVICES}
+            setDevices={devices => { if (isPracticing) return; stopCamera(); void savePreferences({ devices }); }}
+            setTarget={setTargetDuration}
             elapsed={elapsed}
             scenario={scenario} activeGoal={activeGoal} roundIndex={roundIndex} selectRound={selectRound}
-            isPracticing={isPracticing} cameraReady={cameraReady} recording={recording} cameraCollapsed={preferences.cameraCollapsed}
-            cameraHeight={preferences.cameraHeight} videoRef={videoRef} visionStatus={visionStatus} aiStatus={aiStatus}
+            isPracticing={isPracticing} cameraReady={cameraReady} recording={recording}
+            cameraHeight={preferences.cameraHeight} cameraWidth={preferences.cameraWidth ?? 0} videoRef={videoRef} visionStatus={visionStatus} aiStatus={aiStatus}
             mediaError={mediaError} prepareCamera={prepareCamera} startPractice={startPractice} stopPractice={stopPracticeSession}
-            stopCamera={() => { stopCamera(); setNotice("摄像头和麦克风已关闭。"); }} toggleCameraCollapsed={toggleCameraCollapsed}
-            beginCameraResize={beginCameraResize} resetPractice={resetPractice} turns={turns} interimTranscript={interimTranscript}
+            stopCamera={() => { stopCamera(); setNotice("摄像头和麦克风已关闭。"); }}
+            resizeCamera={(size) => void savePreferences({ cameraWidth: size.width, cameraHeight: Math.max(220, size.height - 112) })} resetPractice={resetPractice} turns={turns} interimTranscript={interimTranscript}
             requestAudience={requestAudience} intensity={intensity} setIntensity={setIntensity}
             cancelAudience={cancelAudience} recognitionDisconnected={recognitionDisconnected} connectingSpeech={connectingSpeech}
             reconnectSpeech={() => { if (mediaStream && providerRef.current) void connectSpeech(mediaStream, providerRef.current); }}
@@ -543,21 +582,26 @@ export function SpeechCoachApp() {
         {activeTab === "goals" && <GoalsView goals={goals} documents={documents} profile={profile} busy={goalBusy} setBusy={setGoalBusy} reload={reloadLocalData} chooseGoal={chooseGoal} setNotice={setNotice} />}
         {activeTab === "knowledge" && <KnowledgeView documents={documents} busy={knowledgeBusy} feishuUrl={feishuUrl} setFeishuUrl={setFeishuUrl} importFiles={importFiles} importFeishu={importFeishu} deleteDocument={async (id) => { await db.documents.delete(id); await reloadLocalData(); }} />}
         {activeTab === "humor" && <HumorView materials={humorMaterials} documents={documents} busy={knowledgeBusy} importFiles={importFiles} openKnowledge={() => setActiveTab("knowledge")} reload={reloadLocalData} setNotice={setNotice} />}
-        {activeTab === "review" && <ReviewView latestSession={latestSession} sessions={sessions} review={review} goals={goals} selectRound={selectRound} setActiveTab={setActiveTab} setLatestSession={(session) => { setLatestSession(session); setReview(buildLocalReview(session.transcript, session.metrics, getScenario(session.scenarioId))); }} downloadRecording={downloadRecording} deleteSession={deleteSession} />}
+        {activeTab === "review" && <><div className="review-script-action"><button className="button secondary" disabled={!latestSession?.scenarioSnapshot || isPracticing} onClick={() => latestSession && openStudio("learn", latestSession)}><GitCompareArrows size={17} />选最佳表现，迭代台本</button>{latestSession && !latestSession.scenarioSnapshot && <span>这条旧记录没有当时的原稿快照，不能精确对照。</span>}</div><ReviewView latestSession={latestSession} sessions={sessions} review={review} goals={goals} selectRound={selectRound} setActiveTab={setActiveTab} setLatestSession={(session) => { setLatestSession(session); setReview(session.review ?? buildLocalReview(session.transcript, session.metrics, session.scenarioSnapshot ?? getScenario(session.scenarioId))); }} downloadRecording={downloadRecording} deleteSession={deleteSession} /></>}
       </section>
 
+      {notice && <div className="app-toast" role="status">{notice}</div>}
+
+      {studio && <ScriptStudio scenario={studio.scenario} documents={documents} sessions={sessions} versions={scriptVersions} memories={coachMemories} initialTab={studio.tab} initialSessionId={studio.sessionId} onSave={saveScript} onRefresh={reloadLocalData} onClose={() => setStudio(null)} onKnowledge={() => { setStudio(null); setActiveTab("knowledge"); }} />}
       {onboardingOpen && <OnboardingModal onClose={() => { setOnboardingOpen(false); void savePreferences({ onboardingDismissed: true }); }} onStart={async () => { const next = { ...DEFAULT_PROFILE, onboardingComplete: true, updatedAt: new Date().toISOString() }; await db.profiles.put(next); setProfile(next); setOnboardingOpen(false); setNotice("不用先填画像，直接告诉教练你准备面对谁、在什么时候讲什么。"); setActiveTab("goals"); }} />}
     </main>
   );
 }
 
 interface PracticeViewProps {
+  editScript: () => void; importScript: () => void;
+  visible: boolean; devices: PracticeDevices; setDevices: (devices: PracticeDevices) => void; setTarget: (seconds: number) => void;
   elapsed: number;
   scenario: PracticeScenario; activeGoal: TrainingGoal | null; roundIndex: 1 | 2 | 3; selectRound: (index: 1 | 2 | 3) => void;
-  isPracticing: boolean; cameraReady: boolean; recording: boolean; cameraCollapsed: boolean; cameraHeight: number;
+  isPracticing: boolean; cameraReady: boolean; recording: boolean; cameraHeight: number; cameraWidth: number;
   videoRef: React.RefObject<HTMLVideoElement | null>; visionStatus: string; aiStatus: string; mediaError: string;
-  prepareCamera: () => void; startPractice: () => void; stopPractice: () => void; stopCamera: () => void; toggleCameraCollapsed: () => void;
-  beginCameraResize: (event: React.PointerEvent<HTMLButtonElement>) => void; resetPractice: () => void;
+  prepareCamera: () => void; startPractice: () => void; stopPractice: () => void; stopCamera: () => void;
+  resizeCamera: (size: { width: number; height: number }) => void; resetPractice: () => void;
   turns: ConversationTurn[]; interimTranscript: string; requestAudience: () => void;
   cancelAudience: () => void; recognitionDisconnected: boolean; connectingSpeech: boolean; reconnectSpeech: () => void;
   intensity: AudienceIntensity; setIntensity: (value: AudienceIntensity) => void;
@@ -569,83 +613,75 @@ interface PracticeViewProps {
 }
 
 function PracticeView({
+  editScript, importScript,
+  visible, devices, setDevices, setTarget,
   elapsed, scenario, activeGoal, roundIndex, selectRound, isPracticing, cameraReady,
-  recording, cameraCollapsed, cameraHeight, videoRef, visionStatus, aiStatus,
+  recording, cameraHeight, cameraWidth, videoRef, visionStatus, aiStatus,
   mediaError, prepareCamera, startPractice, stopPractice, stopCamera,
-  toggleCameraCollapsed, beginCameraResize, resetPractice, turns,
+  resizeCamera, resetPractice, turns,
   interimTranscript, requestAudience, intensity, setIntensity, chooseScenario,
   cancelAudience, recognitionDisconnected, connectingSpeech, reconnectSpeech,
   scrollMode, changeScrollMode, speechStatus, speechProgress, teleprompterMode,
   scriptParagraphs, activeSection, teleprompterRef, fontSize, setFontSize,
   scrollSpeed, setScrollSpeed,
 }: PracticeViewProps) {
-  const [settingsHidden, setSettingsHidden] = useState(false);
+  const [scriptVisible, setScriptVisible] = useState(true);
+  const [timerVisible, setTimerVisible] = useState(true);
+  const [cameraPanelVisible, setCameraPanelVisible] = useState(true);
+  const [audiencePanelVisible, setAudiencePanelVisible] = useState(true);
+  const [scriptPinned, setScriptPinned] = useState(false);
+  const [timerPinned, setTimerPinned] = useState(false);
+  const [startRequested, setStartRequested] = useState(false);
   const roundStates = activeGoal?.rounds ?? createPracticeRounds();
   const content = teleprompterMode === "cues" ? scenario.cues : scriptParagraphs;
   return <>
-    <div className="round-stepper" aria-label="三轮训练">
+    <div className="round-stepper" aria-label="三轮训练" hidden={!visible}>
       {roundStates.map((round) => <button key={round.index} className={`${round.index === roundIndex ? "active" : ""} ${round.status}`} onClick={() => selectRound(round.index)} disabled={isPracticing}><span>{round.status === "completed" ? <Check size={14} /> : round.index}</span><strong>第 {round.index} 轮</strong><small>{ROUND_LABELS[round.mode]}</small></button>)}
     </div>
     <div className="practice-layout">
-      <section className="stage-column">
-        <div className={`camera-panel panel ${cameraCollapsed ? "collapsed" : ""}`}>
-          <div className="panel-head compact">
-            <div><p className="section-label">镜头预览</p><h2>{cameraCollapsed ? (recording ? "画面已收起 · 仍在录制" : "画面已收起") : "像现场一样练"}</h2></div>
-            <div className="panel-actions"><span className="privacy-badge"><ShieldCheck size={14} /> 本地分析</span><button className="icon-button" title={cameraCollapsed ? "展开摄像头" : "收起摄像头"} onClick={toggleCameraCollapsed}>{cameraCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}</button></div>
-          </div>
-          <div hidden={cameraCollapsed}>
-            <div className="video-frame" style={{ height: cameraHeight }}>
+      <section className="stage-column" hidden={!visible}>
+        <FloatingTools title="镜头" surface="camera" hidden={!cameraPanelVisible} initialSize={{ width: cameraWidth || 720, height: cameraHeight + 112 }} onResize={resizeCamera} onHide={() => setCameraPanelVisible(false)}>
+          <div className="camera-panel panel">
+          <div className="camera-preview-wrap">
+            <div className="video-frame">
               <video ref={videoRef} muted playsInline />
-              {!cameraReady && <div className="video-empty"><Camera size={34} /><strong>摄像头尚未开启</strong><span>建议镜头包含头部、肩膀和双手活动区域</span></div>}
-              <div className="video-overlay"><span>{visionStatus}</span><span>{aiStatus}</span></div>
+              {!cameraReady && <div className="video-empty"><Camera size={34} /><strong>摄像头尚未开启</strong></div>}
+              <div className="video-overlay">{recording && <span>录制中</span>}{!visionStatus.includes("待机") && <span>{visionStatus}</span>}{!aiStatus.includes("待机") && <span>{aiStatus}</span>}</div>
             </div>
-            <button className="camera-resize-handle" title="拖动调整预览高度" onPointerDown={beginCameraResize}><GripHorizontal size={20} /></button>
           </div>
           {mediaError && <p className="error-text">{mediaError}</p>}
           <div className="stage-actions">
-            {!cameraReady && <button className="button secondary" onClick={prepareCamera}><Camera size={17} />开启摄像头</button>}
-            {!isPracticing ? <button className="button primary" onClick={startPractice}><Play size={17} fill="currentColor" />用这段练习</button> : <button className="button danger" onClick={stopPractice}><CircleStop size={17} />结束并复盘</button>}
+            {!cameraReady && devices.cameraEnabled && <button className="button secondary" disabled={isPracticing} onClick={prepareCamera}><Camera size={17} />开启摄像头</button>}
+            {!isPracticing ? <button className="button primary" onClick={() => setStartRequested(true)}><Play size={17} fill="currentColor" />用这段练习</button> : <button className="button danger" onClick={stopPractice}><CircleStop size={17} />结束并复盘</button>}
             {cameraReady && <button className="button ghost" onClick={stopCamera} disabled={isPracticing} title={isPracticing ? "请先结束本轮" : "停止摄像头和麦克风"}><Power size={16} />关闭摄像头</button>}
             <button className="icon-button" title="重置本轮内容" onClick={resetPractice} disabled={isPracticing}><RotateCcw size={18} /></button>
           </div>
-        </div>
+          </div>
+        </FloatingTools>
 
+        <FloatingTools title="听众与转写" surface="audience" hidden={!audiencePanelVisible} initialSize={{ width: 720, height: 330 }} onHide={() => setAudiencePanelVisible(false)}>
         <div className="conversation-panel panel">
-          <div className="panel-head compact"><div><p className="section-label">真实听众</p><h2>现场反应与转写</h2></div><div className="settings-actions"><button className="button ghost" onClick={requestAudience} disabled={!isPracticing}><Users size={16} />请听众回应</button><button className="icon-button" title="停止听众配音和待播放内容" onClick={cancelAudience} disabled={!isPracticing}><CircleStop size={18} /></button>{recognitionDisconnected && <button className="button secondary" onClick={reconnectSpeech} disabled={!isPracticing || connectingSpeech}><RotateCcw size={16} />{connectingSpeech ? "连接中" : "重连识别"}</button>}</div></div>
+          <div className="conversation-actions"><button className="button ghost" onClick={requestAudience} disabled={!isPracticing}><Users size={16} />请听众回应</button><button className="icon-button" title="停止听众配音和待播放内容" onClick={cancelAudience} disabled={!isPracticing}><CircleStop size={18} /></button>{recognitionDisconnected && <button className="button secondary" onClick={reconnectSpeech} disabled={!isPracticing || connectingSpeech}><RotateCcw size={16} />{connectingSpeech ? "连接中" : "重连识别"}</button>}</div>
           <div className="turn-list">
-            {!turns.length && !interimTranscript && <div className="empty-copy">开始说话后，转写和听众追问会出现在这里。</div>}
             {turns.map((turn) => <div key={turn.id} className={`turn ${turn.role}`}><span>{turn.role === "speaker" ? "你" : turn.role === "audience" ? "听众" : "系统"}</span><p>{turn.text}</p></div>)}
             {interimTranscript && <div className="turn speaker interim"><span>识别中</span><p>{interimTranscript}</p></div>}
           </div>
         </div>
+        </FloatingTools>
       </section>
 
       <aside className="coach-column">
-        <section className="panel controls-panel">
-          <div className="panel-head compact"><h2>练习设置</h2><button className="icon-button" title={settingsHidden ? "展开练习设置" : "收起练习设置"} onClick={() => setSettingsHidden(!settingsHidden)}>{settingsHidden ? <ChevronDown size={18} /> : <ChevronUp size={18} />}</button></div>
-          <div hidden={settingsHidden} className="practice-setting-fields">
-          <div className="setting-field">训练语言<div className="segmented two" role="group" aria-label="训练语言"><button className={scenario.language === "zh-CN" ? "active" : ""} onClick={() => chooseScenario(scenario.kind, "zh-CN")}><Languages size={14} />中文</button><button className={scenario.language === "en-US" ? "active" : ""} onClick={() => chooseScenario(scenario.kind, "en-US")}><Languages size={14} />English</button></div></div>
-          <label>场景<select value={scenario.kind} onChange={(event) => chooseScenario(event.target.value as ScenarioKind, scenario.language)} disabled={isPracticing}>{Object.entries(SCENARIO_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-          <div className="setting-field">听众强度<div className="segmented" role="group" aria-label="听众强度">{(["friendly", "balanced", "challenging"] as AudienceIntensity[]).map((value) => <button key={value} className={intensity === value ? "active" : ""} onClick={() => setIntensity(value)}>{INTENSITY_LABELS[value]}</button>)}</div></div>
-          <div className="goal-box"><span>本轮目标</span><p>{scenario.goal}</p></div>
-          </div>
-        </section>
-
-        <FloatingTools>
-        <PracticeClock elapsed={elapsed} practicing={isPracticing} />
-        <section className="panel teleprompter-panel" ref={teleprompterRef}>
-          <div className="sticky-head"><div className="panel-head"><div><p className="section-label">现场台词卡 · {ROUND_LABELS[teleprompterMode]}</p><h2>{scenario.title}</h2></div><button className="icon-button" title="全屏提词" onClick={() => teleprompterRef.current?.requestFullscreen()}><Maximize2 size={17} /></button></div>
-          <div className="follow-toolbar">
-            <div className="segmented two"><button className={scrollMode === "speech" ? "active" : ""} onClick={() => changeScrollMode("speech")}><Mic size={14} />语音跟随</button><button className={scrollMode === "manual" ? "active" : ""} onClick={() => changeScrollMode("manual")}><Play size={14} />匀速滚动</button></div>
-            <div className="follow-progress"><span>{scrollMode === "speech" ? speechStatus : `速度 ${scrollSpeed}`}</span><i><b style={{ width: `${Math.round(speechProgress * 100)}%` }} /></i></div>
-          </div>
-          </div>
-          {teleprompterMode === "hidden" ? <div className="hidden-script"><EyeOff size={28} /><strong>台词已隐藏</strong><span>系统仍会记录识别进度。现在只依靠结构和现场感表达。</span></div> : <div className={`script-text ${teleprompterMode}`} style={{ fontSize: fontSize }}>{content.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`} data-teleprompter-section={index} className={index === activeSection ? "active" : ""}>{teleprompterMode === "cues" ? `${index + 1}. ${paragraph}` : paragraph}</p>)}</div>}
-          <div className="teleprompter-tools"><label>字号 <input type="range" min="18" max="38" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /></label><label className={scrollMode === "speech" ? "disabled" : ""}>速度 <input type="range" min="0" max="5" value={scrollSpeed} disabled={scrollMode === "speech"} onChange={(event) => setScrollSpeed(Number(event.target.value))} /></label></div>
+        <FloatingTools title="台词" hidden={!scriptVisible || (!visible && !scriptPinned)} forceFloating={!visible && scriptPinned} reading={isPracticing} onHide={() => setScriptVisible(false)}>
+        <section className="teleprompter-panel" ref={teleprompterRef} aria-label="台词正文">
+          {!isPracticing && <><div className="panel-head"><div><p className="section-label">{ROUND_LABELS[teleprompterMode]}</p><h2>{scenario.title}</h2></div></div><div className="script-entry-actions"><button className="button secondary" onClick={editScript}><Pencil size={16} />编辑台本</button><button className="button ghost" onClick={importScript}><BookOpen size={16} />从知识库生成</button></div></>}
+          {teleprompterMode === "hidden" ? <div className="hidden-script"><EyeOff size={28} /><strong>台词已隐藏</strong></div> : <div className={`script-text ${teleprompterMode}`} style={{ fontSize: fontSize }}>{content.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`} data-teleprompter-section={index} className={index === activeSection ? "active" : ""}>{teleprompterMode === "cues" ? `${index + 1}. ${paragraph}` : paragraph}</p>)}</div>}
         </section>
         </FloatingTools>
+        <FloatingTools title="计时器" hidden={!timerVisible || (!visible && !timerPinned)} forceFloating={!visible && timerPinned} onHide={() => setTimerVisible(false)}><PracticeClock elapsed={elapsed} practicing={isPracticing} targetSeconds={scenario.durationSeconds} /></FloatingTools>
+        {isPracticing && visible && <span className="sr-only" role="status">{speechStatus} · {Math.round(speechProgress * 100)}%</span>}
       </aside>
     </div>
+    <PracticeDock editScript={editScript} importScript={importScript} scenario={scenario} practicing={isPracticing} intensity={intensity} chooseScenario={chooseScenario} setIntensity={setIntensity} devices={devices} setDevices={setDevices} target={scenario.durationSeconds} setTarget={setTarget} scriptVisible={scriptVisible} timerVisible={timerVisible} cameraPanelVisible={cameraPanelVisible} audiencePanelVisible={audiencePanelVisible} scriptPinned={scriptPinned} timerPinned={timerPinned} toggleScript={() => setScriptVisible(!scriptVisible)} toggleTimer={() => setTimerVisible(!timerVisible)} toggleCameraPanel={() => setCameraPanelVisible(!cameraPanelVisible)} toggleAudiencePanel={() => setAudiencePanelVisible(!audiencePanelVisible)} toggleScriptPinned={() => setScriptPinned(!scriptPinned)} toggleTimerPinned={() => setTimerPinned(!timerPinned)} fontSize={fontSize} setFontSize={setFontSize} scrollMode={scrollMode} changeScrollMode={changeScrollMode} scrollSpeed={scrollSpeed} setScrollSpeed={setScrollSpeed} start={startPractice} stop={stopPractice} startRequested={startRequested} cancelStart={() => setStartRequested(false)} requestStart={() => setStartRequested(true)} />
   </>;
 }
 
@@ -659,6 +695,7 @@ interface GoalDraft {
   language: TrainingLanguage;
   humorLevel: "none" | "light" | "medium";
   successCriteria: string[];
+  actionSteps: string[];
 }
 
 interface ChatLine { id: string; role: "assistant" | "user"; text: string }
@@ -684,14 +721,15 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
         body: JSON.stringify({ message: userText, profile: profile ?? undefined }),
       });
       if (!understandResponse.ok) throw new Error("目标拆解失败");
-      const { draft } = await understandResponse.json() as { draft: GoalDraft };
+      const { draft, source: understandingSource } = await understandResponse.json() as { draft: GoalDraft; source: "ai" | "local" };
+      const expressionMemories = relevantMemories(await db.coachMemories.orderBy("createdAt").reverse().toArray(), { kind: draft.scenarioKind, language: draft.language }).map(({ rule, kind }) => ({ rule, kind }));
       const knowledgeContext = searchKnowledge(documents, `${draft.title} ${draft.desiredOutcome}`).map(chunk => chunk.text).join("\n\n").slice(0, 10000);
       let plan: GoalPlan = buildLocalGoalPlan(draft);
       let source = "本地模板";
       try {
         const response = await fetch("/api/goals/plan", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ profile: profile ?? undefined, goal: draft, knowledgeContext, humorContext: "" }),
+          body: JSON.stringify({ profile: profile ?? undefined, goal: draft, knowledgeContext, humorContext: "", expressionMemories }),
         });
         if (response.ok) {
           const payload = await response.json() as { plan: GoalPlan; source: string };
@@ -708,7 +746,7 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
       await reload();
       setChat((current) => [...current, {
         id: crypto.randomUUID(), role: "assistant",
-        text: `我已经整理好了：${SCENARIO_LABELS[draft.scenarioKind]}，目标日期 ${draft.targetDate}，面向${draft.audience}。训练目标是“${draft.desiredOutcome}”。三轮计划来自${source}。`,
+        text: `我已经整理好了：${SCENARIO_LABELS[draft.scenarioKind]}，目标日期 ${draft.targetDate}，面向${draft.audience}。\n关键结果：${draft.desiredOutcome}\n行动步骤：\n${draft.actionSteps.map((step, index) => `${index + 1}. ${step}`).join("\n")}\n目标理解来自${understandingSource === "ai" ? "AI 教练" : "本地整理器"}，三轮计划来自${source}。`,
       }]);
       setNotice("目标已从对话中拆解并保存。确认后可以直接开始第一轮。");
     } catch {
@@ -728,6 +766,8 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
       {!goals.length && <div className="panel no-review"><Target size={34} /><h2>还没有训练目标</h2><p>创建目标后，系统会为同一场景安排完整台词、关键词和脱稿三轮。</p></div>}
       {goals.map((goal) => <article className="panel goal-item" key={goal.id}>
         <div className="goal-item-head"><div><p className="section-label">{SCENARIO_LABELS[goal.scenarioKind]} · {goal.language === "en-US" ? "English" : "中文"}</p><h2>{goal.title}</h2><span>{goal.targetDate || "未设日期"} · {Math.round(goal.durationSeconds / 60)} 分钟</span></div><button className="button primary" onClick={() => void chooseGoal(goal)}><Play size={16} />继续训练</button></div>
+        <p className="goal-outcome"><strong>关键结果</strong>{goal.desiredOutcome}</p>
+        {!!goal.actionSteps?.length && <div className="goal-actions"><strong>行动步骤</strong>{goal.actionSteps.map((step, index) => <span key={`${goal.id}-action-${index}`}><b>{index + 1}</b>{step}</span>)}</div>}
         <div className="round-mini">{goal.rounds.map((round) => <span key={round.index} className={round.status}><b>{round.status === "completed" ? "✓" : round.index}</b>{ROUND_LABELS[round.mode]}{round.score !== undefined && <em>{round.score}</em>}</span>)}</div>
         <button className="icon-button goal-delete" title="删除目标" onClick={async () => { await db.goals.delete(goal.id); await reload(); }}><Trash2 size={16} /></button>
       </article>)}
@@ -757,7 +797,7 @@ function HumorView({ materials, documents, busy, importFiles, openKnowledge, rel
       const stored: HumorMaterial = { ...material, id: crypto.randomUUID(), createdAt: now, updatedAt: now };
       await db.humorMaterials.put(stored);
       await reload();
-      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `已经替你整理为“${stored.title}”。${source === "local" ? "当前使用本地模板，所选文本服务未配置或未成功调用。" : "我保留了原意，并标记了适合使用的场景和受众边界。"}` }]);
+      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `已经替你整理为“${stored.title}”。${source === "local" ? "本地整理器已删除常见口头冗余；连接文本教练后还能进一步重写语序。" : "我已经理顺语序、删除重复和口头冗余，并保留了原意。"}` }]);
       setNotice("灵感已经由对话整理并保存在本机素材库。");
     } catch {
       setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "这段灵感暂时没能整理，请稍后再说一次。" }]);
@@ -776,7 +816,7 @@ function HumorView({ materials, documents, busy, importFiles, openKnowledge, rel
         <div className="coach-chat-body">{chat.map((line) => <div key={line.id} className={`coach-message ${line.role}`}><span>{line.role === "assistant" ? "教练" : "你"}</span><p>{line.text}</p></div>)}</div>
         <div className="chat-composer"><textarea aria-label="讲述灵感素材" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void organizeMaterial(); } }} placeholder="比如：今天开会时我发现，大家说要拥抱 AI，最后最忙的是复制粘贴的人..." /><VoiceInput language={language} disabled={busy} onText={text => setMessage(current => `${current}${current ? " " : ""}${text}`)} /><button className="icon-button send-button" title="发送并整理" disabled={!message.trim() || busy} onClick={() => void organizeMaterial()}><Send size={18} /></button></div>
       </section>
-      <section className="panel material-list"><div className="panel-head"><div><p className="section-label">自动整理 · 仅存本机</p><h2>{materials.length} 条灵感素材</h2></div><span className="library-count">另有 {documents.length} 份知识资料</span></div>{!materials.length && <div className="empty-copy">这里没有需要填写的表单。讲一段经历或观察，教练会自动整理。</div>}{materials.map((item) => <article className="material-row" key={item.id}><div><span>{item.language === "en-US" ? "English" : "中文"}</span><strong>{item.title}</strong><p>{item.content}</p><small>边界：{item.audienceBoundary}</small></div><button className="icon-button" title="删除素材" onClick={async () => { await db.humorMaterials.delete(item.id); await reload(); }}><Trash2 size={16} /></button></article>)}</section>
+      <section className="panel material-list"><div className="panel-head"><div><p className="section-label">自动整理 · 仅存本机</p><h2>{materials.length} 条灵感素材</h2></div><span className="library-count">另有 {documents.length} 份知识资料</span></div>{!materials.length && <div className="empty-copy">这里没有需要填写的表单。讲一段经历或观察，教练会自动整理。</div>}{materials.map((item) => <article className="material-row" key={item.id}><div><span>{item.language === "en-US" ? "English" : "中文"}</span><strong>{item.title}</strong>{item.coreIdea && <em className="material-core">核心观点：{item.coreIdea}</em>}<p>{item.content}</p>{!!item.tags.length && <div className="material-tags">{item.tags.map(tag => <i key={tag}>{tag}</i>)}</div>}<small>边界：{item.audienceBoundary}</small></div><button className="icon-button" title="删除素材" onClick={async () => { await db.humorMaterials.delete(item.id); await reload(); }}><Trash2 size={16} /></button></article>)}</section>
     </div>
     <section className="method-band"><div className="section-heading"><div><p className="section-label">训练方法</p><h2>从灵感到可讲述的素材</h2></div><p>以下方法为公开资料主题的转述，不复制书籍正文，也不模仿特定作者文风。</p></div><div className="method-grid">{HUMOR_METHODS.map((method) => <article className="method-card" key={method.id}><Lightbulb size={19} /><h3>{method.title[language]}</h3><p>{method.summary[language]}</p><strong>{method.exercise[language]}</strong></article>)}</div><div className="source-links"><span>合法公开来源：</span>{HUMOR_SOURCES.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.label}</a>)}</div></section>
   </div>;
@@ -787,7 +827,7 @@ function ReviewView({ latestSession, sessions, review, goals, selectRound, setAc
   const goal = goals.find((item) => item.id === latestSession.goalId);
   const goalSessions = goal ? sessions.filter((session) => session.goalId === goal.id) : [];
   const next = latestSession.roundIndex && latestSession.roundIndex < 3 ? (latestSession.roundIndex + 1) as 2 | 3 : null;
-  return <div className="review-layout"><section className="review-main"><div className="panel review-summary"><div className="score-ring"><strong>{review?.overallScore ?? goal?.rounds.find((round) => round.sessionId === latestSession.id)?.score ?? "--"}</strong><span>本轮表现</span></div><div><p className="section-label">{latestSession.roundMode ? ROUND_LABELS[latestSession.roundMode] : "本轮结论"}</p><h2>{review?.summary ?? "选择一条记录查看本地指标。"}</h2><p>{new Date(latestSession.startedAt).toLocaleString("zh-CN")} · {formatTime(Math.round(latestSession.durationMs / 1000))}</p></div></div>{next && <div className="next-round-bar"><div><strong>本轮已完成</strong><span>下一轮不会自动开始，你可以先复盘或重新练习。</span></div><button className="button primary" onClick={() => selectRound(next)}>进入第 {next} 轮 <ArrowRight size={16} /></button></div>}{goal && <section className="panel round-comparison"><div className="panel-head"><div><p className="section-label">三轮对比</p><h2>同一目标的脱稿变化</h2></div></div><div className="comparison-grid">{([1, 2, 3] as const).map((index) => { const item = goalSessions.find((session) => session.roundIndex === index); const state = goal.rounds.find((round) => round.index === index); return <div key={index} className={item ? "complete" : ""}><span>第 {index} 轮 · {ROUND_LABELS[index === 1 ? "full" : index === 2 ? "cues" : "hidden"]}</span><strong>{state?.score ?? "--"}</strong><small>{item ? `${item.metrics.wordsPerMinute} ${item.language === "en-US" ? "wpm" : "字/分"} · 镜头 ${item.metrics.cameraFacingRatio}%` : "尚未练习"}</small></div>; })}</div></section>}{latestSession.videoBlob && <LocalVideo blob={latestSession.videoBlob} />}<div className="metrics-grid panel"><MetricCard label={latestSession.language === "en-US" ? "Words/min" : "语速"} value={latestSession.metrics.wordsPerMinute} suffix={latestSession.language === "en-US" ? "" : " 字/分"} /><MetricCard label="填充词" value={latestSession.metrics.fillerCount} /><MetricCard label="面向镜头" value={latestSession.metrics.cameraFacingRatio} suffix="%" /><MetricCard label="双手可见" value={latestSession.metrics.handsVisibleRatio} suffix="%" /><MetricCard label="手势活动" value={latestSession.metrics.gestureRate} suffix="%" /><MetricCard label="身体晃动" value={latestSession.metrics.bodySway} suffix="%" /></div><section className="panel timeline-panel"><div className="panel-head compact"><div><p className="section-label">表达时间轴</p><h2>音量与镜头连接</h2></div></div><MetricTimeline points={latestSession.metricTimeline} /></section>{review && <section className="panel feedback-grid"><div><p className="section-label positive">做得好的</p>{review.strengths.map((item) => <p key={item}>{item}</p>)}</div><div><p className="section-label caution">优先改进</p>{review.improvements.map((item) => <p key={item}>{item}</p>)}</div><div><p className="section-label action">下一轮练习</p>{review.nextPractice.map((item) => <p key={item}>{item}</p>)}</div></section>}</section><aside className="panel session-history"><p className="section-label">本地记录</p><h2>练习历史</h2>{sessions.map((session) => <div className={`session-row ${latestSession.id === session.id ? "active" : ""}`} key={session.id}><button onClick={() => setLatestSession(session)}><strong>{getScenario(session.scenarioId).title}{session.roundIndex ? ` · 第 ${session.roundIndex} 轮` : ""}</strong><span>{new Date(session.startedAt).toLocaleString("zh-CN")}</span></button><div><button title="下载录像" disabled={!session.videoBlob} onClick={() => downloadRecording(session)}><Download size={15} /></button><button title="永久删除" onClick={() => void deleteSession(session.id)}><Trash2 size={15} /></button></div></div>)}</aside></div>;
+  return <div className="review-layout"><section className="review-main"><div className="panel review-summary"><div className="score-ring"><strong>{review?.overallScore ?? goal?.rounds.find((round) => round.sessionId === latestSession.id)?.score ?? "--"}</strong><span>本轮表现</span></div><div><p className="section-label">{latestSession.roundMode ? ROUND_LABELS[latestSession.roundMode] : "本轮结论"}</p><h2>{review?.summary ?? "选择一条记录查看本地指标。"}</h2><p>{new Date(latestSession.startedAt).toLocaleString("zh-CN")} · {formatTime(Math.round(latestSession.durationMs / 1000))}</p></div></div>{next && <div className="next-round-bar"><div><strong>本轮已完成</strong><span>下一轮不会自动开始，你可以先复盘或重新练习。</span></div><button className="button primary" onClick={() => selectRound(next)}>进入第 {next} 轮 <ArrowRight size={16} /></button></div>}{goal && <section className="panel round-comparison"><div className="panel-head"><div><p className="section-label">三轮对比</p><h2>同一目标的脱稿变化</h2></div></div><div className="comparison-grid">{([1, 2, 3] as const).map((index) => { const item = goalSessions.find((session) => session.roundIndex === index); const state = goal.rounds.find((round) => round.index === index); return <div key={index} className={item ? "complete" : ""}><span>第 {index} 轮 · {ROUND_LABELS[index === 1 ? "full" : index === 2 ? "cues" : "hidden"]}</span><strong>{state?.score ?? "--"}</strong><small>{item ? `${item.metrics.wordsPerMinute} ${item.language === "en-US" ? "wpm" : "字/分"} · ${item.metrics.visualAvailable === false ? "视觉未评估" : `镜头 ${item.metrics.cameraFacingRatio}%`}` : "尚未练习"}</small></div>; })}</div></section>}{latestSession.videoBlob && <LocalVideo blob={latestSession.videoBlob} />}<div className="metrics-grid panel"><MetricCard label={latestSession.language === "en-US" ? "Words/min" : "语速"} value={latestSession.metrics.wordsPerMinute} suffix={latestSession.language === "en-US" ? "" : " 字/分"} /><MetricCard label="填充词" value={latestSession.metrics.fillerCount} /><MetricCard label="面向镜头" value={latestSession.metrics.visualAvailable === false ? "--" : latestSession.metrics.cameraFacingRatio} suffix="%" /><MetricCard label="双手可见" value={latestSession.metrics.visualAvailable === false ? "--" : latestSession.metrics.handsVisibleRatio} suffix="%" /><MetricCard label="手势活动" value={latestSession.metrics.visualAvailable === false ? "--" : latestSession.metrics.gestureRate} suffix="%" /><MetricCard label="身体晃动" value={latestSession.metrics.visualAvailable === false ? "--" : latestSession.metrics.bodySway} suffix="%" /></div><section className="panel timeline-panel"><div className="panel-head compact"><div><p className="section-label">表达时间轴</p><h2>音量与镜头连接</h2></div></div><MetricTimeline points={latestSession.metricTimeline} /></section>{review && <section className="panel feedback-grid"><div><p className="section-label positive">做得好的</p>{review.strengths.map((item) => <p key={item}>{item}</p>)}</div><div><p className="section-label caution">优先改进</p>{review.improvements.map((item) => <p key={item}>{item}</p>)}</div><div><p className="section-label action">下一轮练习</p>{review.nextPractice.map((item) => <p key={item}>{item}</p>)}</div></section>}</section><aside className="panel session-history"><p className="section-label">本地记录</p><h2>练习历史</h2>{sessions.map((session) => <div className={`session-row ${latestSession.id === session.id ? "active" : ""}`} key={session.id}><button onClick={() => setLatestSession(session)}><strong>{getScenario(session.scenarioId).title}{session.roundIndex ? ` · 第 ${session.roundIndex} 轮` : ""}</strong><span>{new Date(session.startedAt).toLocaleString("zh-CN")}</span></button><div><button title="下载录像" disabled={!session.videoBlob} onClick={() => downloadRecording(session)}><Download size={15} /></button><button title="永久删除" onClick={() => void deleteSession(session.id)}><Trash2 size={15} /></button></div></div>)}</aside></div>;
 }
 
 function OnboardingModal({ onClose, onStart }: { onClose: () => void; onStart: () => Promise<void> }) {

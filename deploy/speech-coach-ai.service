@@ -1,0 +1,35 @@
+[Unit]
+Description=Speech Coach AI (private loopback service)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=speech-coach
+Group=speech-coach
+WorkingDirectory=/opt/speech-coach-ai/current
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=SPEECH_COACH_DATA_DIR=/var/lib/speech-coach-ai
+EnvironmentFile=-/etc/speech-coach-ai.env
+Environment=PATH=/opt/speech-coach-ai/runtime/bin:/usr/bin:/bin
+Environment=NODE_OPTIONS=--max-old-space-size=512
+ExecStart=/opt/speech-coach-ai/runtime/bin/node --import tsx server.ts --hostname 127.0.0.1 --port 3004
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/speech-coach-ai /opt/speech-coach-ai/current/.next
+RestrictSUIDSGID=true
+MemoryMax=768M
+CPUQuota=80%
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

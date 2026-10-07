@@ -1,17 +1,19 @@
 import { z } from "zod";
 import type { ServerConfig } from "../server-config";
 import type { SpeechSynthesizer, VoiceOption } from "./contracts";
-const minimaxBase = "https://api.minimax.cn/v1";
-const baseResponse = z.object({ base_resp: z.object({ status_code: z.number() }) });
+const minimaxBase = "https://api.minimaxi.com/v1";
+const baseResponse = z.object({ base_resp: z.object({ status_code: z.number(), status_msg: z.string().optional() }) });
 async function minimax(config: ServerConfig, path: string, body: object, signal?: AbortSignal) {
   if (!config.MINIMAX_API_KEY) throw new Error("请先保存 MiniMax Key");
   const response = await fetch(`${minimaxBase}/${path}`, {
     method: "POST", headers: { Authorization: `Bearer ${config.MINIMAX_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
   });
-  if (!response.ok) throw new Error(`MiniMax 调用失败 (${response.status})`);
-  const data = await response.json();
-  if (baseResponse.parse(data).base_resp.status_code !== 0) throw new Error("MiniMax 未通过：请检查密钥、额度和音色权限");
+  const data = await response.json().catch(() => null);
+  const envelope = baseResponse.safeParse(data);
+  if (!response.ok) throw new Error(envelope.success && envelope.data.base_resp.status_msg ? envelope.data.base_resp.status_msg : `MiniMax 调用失败 (${response.status})`);
+  if (!envelope.success) throw new Error("MiniMax 返回格式无法识别");
+  if (envelope.data.base_resp.status_code !== 0) throw new Error(envelope.data.base_resp.status_msg || "MiniMax 未通过：请检查密钥、额度和音色权限");
   return data;
 }
 export async function getVoices(config: ServerConfig, signal?: AbortSignal): Promise<VoiceOption[]> {

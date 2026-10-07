@@ -1,5 +1,13 @@
 import type { ServerConfig } from "../server-config";
 import type { TextProvider } from "./contracts";
+import type { ZodType } from "zod";
+
+export function parseGeneratedJson<T>(text: string, schema: ZodType<T>): T {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("文本服务未返回 JSON");
+  return schema.parse(JSON.parse(text.slice(start, end + 1)));
+}
 export function textConfigured(config: ServerConfig) { return Boolean(config.bindings.text === "deepseek" ? config.DEEPSEEK_API_KEY : config.OPENAI_API_KEY); }
 export function createTextProvider(config: ServerConfig): TextProvider {
   return { async generate(prompt, signal) {

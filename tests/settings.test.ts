@@ -16,4 +16,12 @@ describe("local settings security", () => {
     expect(isLocalConfigRequest(request("127.0.0.1:3003", "https://other.example"))).toBe(false);
     expect(isLocalConfigRequest(request("other.example", "http://other.example"))).toBe(false);
   });
+  it("only accepts the configured HTTPS deployment origin", () => {
+    const request = (host: string, origin: string) => new Request(`http://${host}/api/settings`, { method: "POST", headers: { host, origin } });
+    process.env.SPEECH_COACH_ALLOWED_ORIGIN = "https://101.132.96.36";
+    expect(isLocalConfigRequest(request("101.132.96.36", "https://101.132.96.36"))).toBe(true);
+    expect(isLocalConfigRequest(request("101.132.96.36", "https://evil.example"))).toBe(false);
+    expect(isLocalConfigRequest(request("other.example", "https://101.132.96.36"))).toBe(false);
+    delete process.env.SPEECH_COACH_ALLOWED_ORIGIN;
+  });
 });

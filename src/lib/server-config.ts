@@ -2,6 +2,7 @@ import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { ProviderId, ProviderCheck, SettingsStatus } from "./providers/contracts";
+import { trustedFetchRequest } from "./request-origin";
 
 const model = z.string().min(1).max(120).regex(/^[a-zA-Z0-9._-]+$/);
 export const configSchema = z.object({
@@ -15,7 +16,8 @@ export const configSchema = z.object({
   ALIYUN_API_KEY: z.string().max(512).optional(),
   ALIYUN_WORKSPACE_ID: z.string().max(120).regex(/^[a-zA-Z0-9-]*$/).optional(),
   ALIYUN_ASR_MODEL: model.optional(), ALIYUN_REGION: z.enum(["cn-beijing", "ap-southeast-1"]).optional(),
-  MINIMAX_API_KEY: z.string().max(512).optional(), MINIMAX_MODEL: model.optional(), MINIMAX_VOICE_ID: z.string().max(200).optional(),
+  // MiniMax issues long JWT-style keys; keep a bounded but sufficiently large limit.
+  MINIMAX_API_KEY: z.string().max(4096).optional(), MINIMAX_MODEL: model.optional(), MINIMAX_VOICE_ID: z.string().max(200).optional(),
   bindings: z.object({ text: z.enum(["openai", "deepseek"]), recognition: z.enum(["openai", "aliyun", "browser", "off"]), synthesis: z.enum(["minimax", "openai", "off"]) }).strict().optional(),
 }).strict();
 const checkSchema = z.object({ authenticationAt: z.string().optional(), callAt: z.string().optional(), callCapability: z.enum(["text", "synthesis", "recognition"]).optional(), latencyMs: z.number().optional() });
@@ -53,12 +55,7 @@ export async function getConfig() {
 }
 export type ServerConfig = Awaited<ReturnType<typeof getConfig>>;
 export function isLocalConfigRequest(request: Request) {
-  const url = new URL(request.url);
-  const host = request.headers.get("host");
-  if (!host || !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host)) return false;
-  const origin = request.headers.get("origin");
-  if (request.method !== "GET" && origin !== `${url.protocol}//${host}`) return false;
-  return !origin || origin === `${url.protocol}//${host}`;
+  return trustedFetchRequest(request);
 }
 // The custom server and Next route bundles share a process but load separate copies of this module.
 const writes = globalThis as typeof globalThis & { speechCoachConfigWrite?: Promise<unknown> };
