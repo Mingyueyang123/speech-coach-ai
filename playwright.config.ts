@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -24,7 +27,8 @@ export default defineConfig({
   webServer: {
     command: "npm run start -- --hostname 127.0.0.1 --port 3100",
     url: "http://127.0.0.1:3100",
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
+    env: { SPEECH_COACH_DATA_DIR: mkdtempSync(join(tmpdir(), "speech-coach-e2e-")), OPENAI_API_KEY: "", DEEPSEEK_API_KEY: "", ALIYUN_API_KEY: "", MINIMAX_API_KEY: "" },
     timeout: 120_000,
   },
 });

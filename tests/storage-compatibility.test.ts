@@ -1,0 +1,21 @@
+import "fake-indexeddb/auto";
+import { afterEach, expect, it } from "vitest";
+import Dexie from "dexie";
+import { db } from "@/lib/db";
+import { calculateDeliveryMetrics } from "@/lib/analysis";
+import type { SessionRecord } from "@/lib/types";
+afterEach(async () => { db.close(); await Dexie.delete("speech-coach-ai"); });
+it("preserves old recordings and documents while accepting optional provider snapshots", async () => {
+  const previous = new Dexie("speech-coach-ai");
+  previous.version(1).stores({ documents: "id, source, title, createdAt, updatedAt", sessions: "id, scenarioId, startedAt" });
+  const record: SessionRecord = { id: "old-round", scenarioId: "investor-pitch", startedAt: "2026-01-01", durationMs: 60000, transcript: "历史发言", turns: [], metricTimeline: [], metrics: calculateDeliveryMetrics("历史发言", 60000, []) };
+  await previous.table("sessions").put(record);
+  await previous.table("documents").put({ id: "private-document", title: "Original local material", source: "file" });
+  previous.close();
+  await db.open();
+  expect((await db.sessions.get("old-round"))?.transcript).toBe("历史发言");
+  expect((await db.sessions.get("old-round"))?.providers).toBeUndefined();
+  expect((await db.documents.get("private-document"))?.title).toBe("Original local material");
+  await db.sessions.put({ ...record, id: "new-round", providers: { text: "deepseek", recognition: "aliyun", synthesis: "minimax", textModel: "deepseek-flash", recognitionModel: "qwen-audio-3.1-asr-flash-streaming", synthesisModel: "speech-2.8-turbo" } });
+  db.close(); await db.open(); expect(await db.sessions.count()).toBe(2);
+});

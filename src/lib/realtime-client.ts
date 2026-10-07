@@ -8,6 +8,8 @@ interface RealtimeOptions {
   onTurn: (turn: ConversationTurn) => void;
   onStatus: (status: string) => void;
   onTranscript?: (text: string, final: boolean) => void;
+  signal?: AbortSignal;
+  onError?: () => void;
 }
 
 export interface RealtimeConnection {
@@ -29,8 +31,12 @@ export async function connectRealtime(options: RealtimeOptions): Promise<Realtim
 
   const channel = peer.createDataChannel("oai-events");
   const partials = new Map<string, string>();
-  channel.onopen = () => options.onStatus("真实听众已连接");
-  channel.onclose = () => options.onStatus("真实听众已断开");
+  const completed = new Set<string>();
+  channel.onopen = () => options.onStatus("OpenAI 实时识别已连接");
+  peer.onconnectionstatechange = () => {
+    if (peer.connectionState === "failed" || peer.connectionState === "disconnected") options.onError?.();
+  };
+  channel.onclose = () => { options.onStatus("实时识别已断开"); options.onError?.(); };
   channel.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data) as Record<string, unknown>;
@@ -42,7 +48,10 @@ export async function connectRealtime(options: RealtimeOptions): Promise<Realtim
         options.onTranscript?.(text, false);
       }
       if (type === "conversation.item.input_audio_transcription.completed") {
-        partials.delete(String(payload.item_id ?? "current"));
+        const id = String(payload.item_id ?? "current");
+        if (completed.has(id)) return;
+        completed.add(id);
+        partials.delete(id);
         const transcript = String(payload.transcript ?? "").trim();
         if (transcript) {
           options.onTranscript?.(transcript, true);
@@ -55,7 +64,7 @@ export async function connectRealtime(options: RealtimeOptions): Promise<Realtim
           options.onTurn({ id: crypto.randomUUID(), role: "audience", text: transcript, timestampMs: Date.now() });
         }
       }
-      if (type === "error" || type === "conversation.item.input_audio_transcription.failed") options.onStatus("实时语音返回错误，请检查 API 配置和额度");
+      if (type === "error" || type === "conversation.item.input_audio_transcription.failed") { options.onStatus("实时语音返回错误，请检查 API 配置和额度"); options.onError?.(); }
     } catch {
       options.onStatus("收到无法解析的实时事件");
     }
@@ -66,7 +75,7 @@ export async function connectRealtime(options: RealtimeOptions): Promise<Realtim
   await peer.setLocalDescription(offer);
   const response = await fetch("/api/realtime/session", {
     method: "POST",
-    signal: AbortSignal.timeout(20000),
+    signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       sdp: offer.sdp,
@@ -94,6 +103,7 @@ export async function connectRealtime(options: RealtimeOptions): Promise<Realtim
   return {
     requestResponse,
     disconnect: () => {
+      channel.onclose = null;
       channel.close();
       peer.close();
       audio.srcObject = null;

@@ -9,6 +9,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiSettings } from "@/components/ApiSettings";
+import { VoiceInput } from "@/components/VoiceInput";
+import { startRecognizer } from "@/lib/speech-client";
+import { AudiencePlayer } from "@/lib/audience-player";
+import type { SettingsStatus, SpeechRecognizer, ProviderSnapshot } from "@/lib/providers/contracts";
 import { FloatingTools, PracticeClock } from "@/components/FloatingTools";
 import { useMediaSession } from "@/hooks/useMediaSession";
 import { buildLocalReview, calculateDeliveryMetrics } from "@/lib/analysis";
@@ -16,7 +20,6 @@ import { db } from "@/lib/db";
 import { buildLocalGoalPlan, createPracticeRounds, DEFAULT_PROFILE, nextRoundIndex } from "@/lib/goals";
 import { HUMOR_METHODS, HUMOR_SOURCES } from "@/lib/humor";
 import { chunkText, parseKnowledgeFile, searchKnowledge } from "@/lib/knowledge";
-import { connectRealtime, type RealtimeConnection } from "@/lib/realtime-client";
 import { getScenario, getScenarioByKind, SCENARIOS } from "@/lib/scenarios";
 import { findSpeechProgress, progressToSection } from "@/lib/speech-follow";
 import type {
@@ -27,21 +30,6 @@ import type {
 } from "@/lib/types";
 
 type AppTab = "practice" | "goals" | "knowledge" | "humor" | "review" | "settings";
-
-interface RecognitionAlternativeLike { transcript: string; confidence?: number }
-interface RecognitionResultLike { isFinal: boolean; 0: RecognitionAlternativeLike }
-interface RecognitionEventLike { resultIndex: number; results: ArrayLike<RecognitionResultLike> }
-interface RecognitionLike {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  onresult: ((event: RecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-}
-type RecognitionConstructor = new () => RecognitionLike;
 
 const DEFAULT_PREFERENCES: AppPreferences = {
   id: "app-preferences", cameraHeight: 420, cameraCollapsed: false,
@@ -83,6 +71,8 @@ export function SpeechCoachApp() {
   const [, setTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const turnsRef = useRef<ConversationTurn[]>([]);
+  const addTurn = (turn: ConversationTurn) => { turnsRef.current = [...turnsRef.current, turn]; setTurns(turnsRef.current); };
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [goals, setGoals] = useState<TrainingGoal[]>([]);
@@ -99,12 +89,20 @@ export function SpeechCoachApp() {
   const [aiStatus, setAiStatus] = useState("真实听众待机");
 
   const teleprompterRef = useRef<HTMLElement>(null);
-  const recognitionRef = useRef<RecognitionLike | null>(null);
+  const recognitionRef = useRef<SpeechRecognizer | null>(null);
+  const recognitionAbort = useRef<AbortController | null>(null);
+  const audienceAbort = useRef<AbortController | null>(null);
+  const audiencePlayer = useRef<AudiencePlayer | null>(null);
+  const providerRef = useRef<SettingsStatus | null>(null);
+  const snapshotRef = useRef<ProviderSnapshot | undefined>(undefined);
+  const [recognitionDisconnected, setRecognitionDisconnected] = useState(false);
+  const [connectingSpeech, setConnectingSpeech] = useState(false);
   const practicingRef = useRef(false);
+  const startingRef = useRef(false);
+  const stoppingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scrollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef(0);
-  const realtimeRef = useRef<RealtimeConnection | null>(null);
   const spokenTextRef = useRef("");
   const progressRef = useRef(0);
   const missedMatchesRef = useRef(0);
@@ -112,7 +110,7 @@ export function SpeechCoachApp() {
   const speechModeRef = useRef<ScrollMode>("speech");
 
   const {
-    videoRef, cameraReady, recording, visionStatus, error: mediaError,
+    videoRef, stream: mediaStream, cameraReady, recording, visionStatus, error: mediaError,
     prepare: prepareMedia, startRecording, stopRecording, stopCamera, getMetricTimeline,
   } = useMediaSession();
 
@@ -217,56 +215,49 @@ export function SpeechCoachApp() {
 
   useEffect(() => { followRef.current = setSpeechMatch; speechModeRef.current = scrollMode; }, [setSpeechMatch, scrollMode]);
 
-  const configureSpeechRecognition = useCallback(() => {
-    const browserWindow = window as typeof window & { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
-    const Constructor = browserWindow.SpeechRecognition ?? browserWindow.webkitSpeechRecognition;
-    if (!Constructor) {
-      setSpeechStatus("浏览器不支持语音跟随");
-      setNotice("浏览器识别不可用。可在 API 配置中添加 OpenAI Key，或用桌面 Chrome。当前可手动滚动。");
-      setScrollSpeed(0);
-      void savePreferences({ scrollMode: "manual" });
-      return null;
-    }
-    const recognition = new Constructor();
-    recognition.lang = scenario.language;
-    recognition.interimResults = true;
-    recognition.continuous = true;
-    recognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        if (result.isFinal) finalText += result[0].transcript;
-        else interimText += result[0].transcript;
-      }
-      if (finalText) {
-        spokenTextRef.current += ` ${finalText}`;
-        setTranscript((current) => `${current}${current ? "\n" : ""}${finalText}`);
-        setTurns((current) => [...current, { id: crypto.randomUUID(), role: "speaker", text: finalText, timestampMs: Date.now() }]);
-      }
-      setInterimTranscript(interimText);
-      followRef.current(`${spokenTextRef.current} ${interimText}`, Boolean(finalText));
+  const cancelAudience = () => { audienceAbort.current?.abort(); audiencePlayer.current?.cancel(); };
+  useEffect(() => () => {
+    recognitionAbort.current?.abort(); void recognitionRef.current?.stop();
+    audienceAbort.current?.abort(); audiencePlayer.current?.cancel();
+    if (timerRef.current) clearInterval(timerRef.current);
+  }, []);
+
+  const connectSpeech = async (stream: MediaStream, settings: SettingsStatus) => {
+    setConnectingSpeech(true); setRecognitionDisconnected(false);
+    recognitionAbort.current?.abort();
+    const controller = new AbortController(); recognitionAbort.current = controller;
+    const failed = (message: string) => {
+      if (!practicingRef.current) return;
+      controller.abort(); recognitionRef.current = null;
+      setSpeechStatus("语音跟随暂停"); setAiStatus(message); setRecognitionDisconnected(true); setScrollSpeed(0);
     };
-    recognition.onerror = () => {
-      setSpeechStatus("语音识别中断");
-      recognition.onend = null;
-      setScrollSpeed(0);
-      void savePreferences({ scrollMode: "manual" });
-      setNotice("浏览器语音服务中断，已暂停自动滚动。请检查网络，或在 API 配置中启用 OpenAI 语音。");
-    };
-    recognition.onend = () => {
-      if (practicingRef.current) {
-        try { recognition.start(); } catch { /* Browser is still closing the previous stream. */ }
-      }
-    };
-    recognitionRef.current = recognition;
-    return recognition;
-  }, [savePreferences, scenario.language]);
+    try {
+      const connection = await startRecognizer({ provider: settings.bindings.recognition, stream, language: scenario.language, signal: controller.signal,
+        onStatus: setSpeechStatus, onError: failed,
+        onUpdate: update => {
+          if (controller.signal.aborted) return;
+          cancelAudience();
+          if (update.final) {
+            spokenTextRef.current += `${spokenTextRef.current ? "\n" : ""}${update.text}`;
+            setTranscript(spokenTextRef.current);
+            addTurn({ id: update.id, role: "speaker", text: update.text, timestampMs: Date.now() });
+          }
+          setInterimTranscript(update.final ? "" : update.text);
+          followRef.current(`${spokenTextRef.current} ${update.final ? "" : update.text}`, update.final);
+        },
+      });
+      if (!practicingRef.current || controller.signal.aborted) await connection.stop();
+      else { recognitionRef.current = connection; setAiStatus("听众待命 · 点击回应后才提问"); }
+    } catch (e) { if (!controller.signal.aborted) failed(e instanceof Error ? e.message : "语音连接失败"); }
+    finally { setConnectingSpeech(false); }
+  };
 
   const resetPractice = useCallback(() => {
     setTranscript("");
     setInterimTranscript("");
     setTurns([]);
+    turnsRef.current = [];
+    snapshotRef.current = undefined;
     setElapsed(0);
     setReview(null);
     setSpeechProgress(0);
@@ -287,6 +278,8 @@ export function SpeechCoachApp() {
   };
 
   const startPractice = async () => {
+    if (startingRef.current || stoppingRef.current || practicingRef.current) return;
+    startingRef.current = true;
     try {
       const stream = await prepareMedia();
       resetPractice();
@@ -297,53 +290,53 @@ export function SpeechCoachApp() {
       setNotice(`第 ${roundIndex} 轮进行中：${ROUND_LABELS[teleprompterMode]}。`);
       timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000)), 250);
       try {
-        const status = await fetch("/api/settings", { signal: AbortSignal.timeout(5000) }).then(r => r.json());
+        const status = await fetch("/api/settings", { signal: AbortSignal.timeout(5000) }).then(r => r.json()) as SettingsStatus;
         if (!practicingRef.current) return;
-        if (!status.openai) throw new Error("未配置 OpenAI Key，使用浏览器识别与本地听众");
-        setAiStatus("正在连接真实听众");
-        const connection = await connectRealtime({
-          stream, scenario, intensity, knowledgeContext, onStatus: setAiStatus,
-          onTurn: (turn) => { if (turn.role === "audience") setTurns((current) => [...current, turn]); },
-          onTranscript: (text, final) => {
-            if (!practicingRef.current) return;
-            if (final) {
-              spokenTextRef.current += `${spokenTextRef.current ? "\n" : ""}${text}`;
-              setTranscript(spokenTextRef.current);
-              setTurns(current => [...current, { id: crypto.randomUUID(), role: "speaker", text, timestampMs: Date.now() }]);
-            }
-            setInterimTranscript(final ? "" : text);
-            followRef.current(`${spokenTextRef.current} ${final ? "" : text}`, final);
-          },
-        });
-        if (!practicingRef.current) connection.disconnect();
-        else { realtimeRef.current = connection; setSpeechStatus("OpenAI 实时识别已连接"); }
+        providerRef.current = status;
+        snapshotRef.current = { ...status.bindings, textModel: status.bindings.text === "deepseek" ? status.models.deepseek : status.reviewModel,
+          recognitionModel: status.bindings.recognition === "aliyun" ? status.models.aliyun : status.bindings.recognition === "openai" ? status.realtimeModel : status.bindings.recognition,
+          synthesisModel: status.bindings.synthesis === "minimax" ? status.models.minimax : status.bindings.synthesis === "openai" ? "gpt-4o-mini-tts" : "off" };
+        await connectSpeech(stream, status);
       } catch (cause) {
         if (!practicingRef.current) return;
-        setAiStatus(cause instanceof Error ? cause.message : "真实听众未连接，当前使用本地模式");
-        const recognition = configureSpeechRecognition();
-        try { recognition?.start(); } catch { setNotice("浏览器语音启动失败，请检查权限或配置 OpenAI Key。"); }
+        setAiStatus(cause instanceof Error ? cause.message : "无法读取语音配置");
+        setRecognitionDisconnected(true);
       }
     } catch {
       setNotice("练习未开始：需要允许摄像头和麦克风权限。");
-    }
+    } finally { startingRef.current = false; }
   };
 
-  const requestAudience = () => {
-    if (realtimeRef.current) {
-      realtimeRef.current.requestResponse(scenario.language === "en-US" ? "Respond as a realistic audience member with one concise question." : "请作为真实听众，用一句简短反应或追问回应。 ");
-      return;
-    }
-    const prompt = scenario.prompts[turns.filter((turn) => turn.role === "audience").length % scenario.prompts.length];
-    setTurns((current) => [...current, { id: crypto.randomUUID(), role: "audience", text: prompt, timestampMs: Date.now() }]);
-    setAiStatus("本地模拟听众");
+  const requestAudience = async () => {
+    cancelAudience(); const controller = new AbortController(); audienceAbort.current = controller;
+    setAiStatus("听众正在准备问题");
+    try {
+      const response = await fetch("/api/audience", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+        body: JSON.stringify({ language: scenario.language, title: scenario.title, goal: scenario.goal, persona: scenario.audiencePersona, intensity,
+          transcript: spokenTextRef.current.slice(-8000), knowledgeContext: knowledgeContext.slice(0, 6000), previousQuestions: turns.filter(t => t.role === "audience").slice(-5).map(t => t.text.slice(0, 1200)) }),
+      });
+      if (!response.ok) throw new Error("听众请求失败，请重试");
+      const data = await response.json(); controller.signal.throwIfAborted();
+      if (!practicingRef.current) return;
+      addTurn({ id: crypto.randomUUID(), role: "audience", text: data.question, timestampMs: Date.now() });
+      setAiStatus(data.source === "local" ? "本地模板问题 · 所选文本服务不可用" : "AI 听众提问 · 合成声音");
+      if (providerRef.current?.bindings.synthesis !== "off") {
+        audiencePlayer.current ??= new AudiencePlayer();
+        await audiencePlayer.current.play(data.question, scenario.language, controller.signal);
+      }
+    } catch (e) { if (!controller.signal.aborted) setAiStatus(e instanceof Error ? e.message : "听众回应失败"); }
   };
 
   const stopPracticeSession = async () => {
+    if (stoppingRef.current || !practicingRef.current) return;
+    stoppingRef.current = true;
+    try {
     if (timerRef.current) clearInterval(timerRef.current);
     practicingRef.current = false;
-    recognitionRef.current?.stop();
-    realtimeRef.current?.disconnect();
-    realtimeRef.current = null;
+    cancelAudience();
+    await recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    recognitionAbort.current?.abort();
     setIsPracticing(false);
     setInterimTranscript("");
     setAiStatus("真实听众待机");
@@ -355,21 +348,24 @@ export function SpeechCoachApp() {
     const session: SessionRecord = {
       id: crypto.randomUUID(), scenarioId: scenario.id.split(":")[0], goalId: activeGoal?.id,
       roundMode: teleprompterMode, roundIndex, language: scenario.language,
+      providers: snapshotRef.current,
       speechFollowProgress: progressRef.current, startedAt: new Date(startedAtRef.current).toISOString(),
-      durationMs, transcript, turns, metricTimeline, metrics, ...(videoBlob ? { videoBlob } : {}),
+      durationMs, transcript, turns: turnsRef.current, metricTimeline, metrics, ...(videoBlob ? { videoBlob } : {}),
     };
     await db.sessions.put(session);
     setLatestSession(session);
     setSessions((current) => [session, ...current]);
 
     let nextReview = buildLocalReview(transcript, metrics, scenario);
+    let localReview = true;
     try {
       const response = await fetch("/api/review", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, metrics, scenario, knowledgeContext }),
+        body: JSON.stringify({ transcript: transcript.slice(-30000), metrics, scenario: { title: scenario.title, goal: scenario.goal, rubric: scenario.rubric, prompts: scenario.prompts, language: scenario.language }, knowledgeContext }),
       });
-      if (response.ok) nextReview = await response.json() as ReviewReport;
+      if (response.ok) { nextReview = await response.json() as ReviewReport; localReview = false; }
     } catch { /* Local review remains available offline. */ }
+    if (localReview) nextReview = { ...nextReview, summary: `${scenario.language === "en-US" ? "Local template review: " : "本地模板复盘："}${nextReview.summary}` };
     setReview(nextReview);
 
     if (activeGoal) {
@@ -385,6 +381,8 @@ export function SpeechCoachApp() {
     }
     setNotice("本轮已保存到本机。你可以先复盘，再手动进入下一轮。");
     setActiveTab("review");
+    } catch { setNotice("本轮处理未完成，请检查浏览器可用存储空间。已有记录不会被清空。"); }
+    finally { stoppingRef.current = false; }
   };
 
   const selectRound = (index: 1 | 2 | 3) => {
@@ -531,6 +529,8 @@ export function SpeechCoachApp() {
             stopCamera={() => { stopCamera(); setNotice("摄像头和麦克风已关闭。"); }} toggleCameraCollapsed={toggleCameraCollapsed}
             beginCameraResize={beginCameraResize} resetPractice={resetPractice} turns={turns} interimTranscript={interimTranscript}
             requestAudience={requestAudience} intensity={intensity} setIntensity={setIntensity}
+            cancelAudience={cancelAudience} recognitionDisconnected={recognitionDisconnected} connectingSpeech={connectingSpeech}
+            reconnectSpeech={() => { if (mediaStream && providerRef.current) void connectSpeech(mediaStream, providerRef.current); }}
             chooseScenario={chooseScenario} scrollMode={scrollMode} changeScrollMode={changeScrollMode}
             speechStatus={speechStatus} speechProgress={speechProgress} teleprompterMode={teleprompterMode}
             scriptParagraphs={scriptParagraphs} activeSection={activeSection}
@@ -538,7 +538,7 @@ export function SpeechCoachApp() {
             scrollSpeed={scrollSpeed} setScrollSpeed={setScrollSpeed}
           />
         </div>
-        {activeTab === "settings" && <ApiSettings />}
+        {activeTab === "settings" && (isPracticing ? <p role="status">本轮正在录制。结束练习后可调整服务商配置。</p> : <ApiSettings />)}
 
         {activeTab === "goals" && <GoalsView goals={goals} documents={documents} profile={profile} busy={goalBusy} setBusy={setGoalBusy} reload={reloadLocalData} chooseGoal={chooseGoal} setNotice={setNotice} />}
         {activeTab === "knowledge" && <KnowledgeView documents={documents} busy={knowledgeBusy} feishuUrl={feishuUrl} setFeishuUrl={setFeishuUrl} importFiles={importFiles} importFeishu={importFeishu} deleteDocument={async (id) => { await db.documents.delete(id); await reloadLocalData(); }} />}
@@ -559,6 +559,7 @@ interface PracticeViewProps {
   prepareCamera: () => void; startPractice: () => void; stopPractice: () => void; stopCamera: () => void; toggleCameraCollapsed: () => void;
   beginCameraResize: (event: React.PointerEvent<HTMLButtonElement>) => void; resetPractice: () => void;
   turns: ConversationTurn[]; interimTranscript: string; requestAudience: () => void;
+  cancelAudience: () => void; recognitionDisconnected: boolean; connectingSpeech: boolean; reconnectSpeech: () => void;
   intensity: AudienceIntensity; setIntensity: (value: AudienceIntensity) => void;
   chooseScenario: (kind: ScenarioKind, language: TrainingLanguage) => void;
   scrollMode: ScrollMode; changeScrollMode: (mode: ScrollMode) => void; speechStatus: string; speechProgress: number;
@@ -573,6 +574,7 @@ function PracticeView({
   mediaError, prepareCamera, startPractice, stopPractice, stopCamera,
   toggleCameraCollapsed, beginCameraResize, resetPractice, turns,
   interimTranscript, requestAudience, intensity, setIntensity, chooseScenario,
+  cancelAudience, recognitionDisconnected, connectingSpeech, reconnectSpeech,
   scrollMode, changeScrollMode, speechStatus, speechProgress, teleprompterMode,
   scriptParagraphs, activeSection, teleprompterRef, fontSize, setFontSize,
   scrollSpeed, setScrollSpeed,
@@ -609,7 +611,7 @@ function PracticeView({
         </div>
 
         <div className="conversation-panel panel">
-          <div className="panel-head compact"><div><p className="section-label">真实听众</p><h2>现场反应与转写</h2></div><button className="button ghost" onClick={requestAudience} disabled={!isPracticing}><Users size={16} />请听众回应</button></div>
+          <div className="panel-head compact"><div><p className="section-label">真实听众</p><h2>现场反应与转写</h2></div><div className="settings-actions"><button className="button ghost" onClick={requestAudience} disabled={!isPracticing}><Users size={16} />请听众回应</button><button className="icon-button" title="停止听众配音和待播放内容" onClick={cancelAudience} disabled={!isPracticing}><CircleStop size={18} /></button>{recognitionDisconnected && <button className="button secondary" onClick={reconnectSpeech} disabled={!isPracticing || connectingSpeech}><RotateCcw size={16} />{connectingSpeech ? "连接中" : "重连识别"}</button>}</div></div>
           <div className="turn-list">
             {!turns.length && !interimTranscript && <div className="empty-copy">开始说话后，转写和听众追问会出现在这里。</div>}
             {turns.map((turn) => <div key={turn.id} className={`turn ${turn.role}`}><span>{turn.role === "speaker" ? "你" : turn.role === "audience" ? "听众" : "系统"}</span><p>{turn.text}</p></div>)}
@@ -667,6 +669,7 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
   setNotice: (value: string) => void;
 }) {
   const [message, setMessage] = useState("");
+  const [inputLanguage, setInputLanguage] = useState<TrainingLanguage>(profile?.languages[0] ?? "zh-CN");
   const [chat, setChat] = useState<ChatLine[]>([{ id: "welcome", role: "assistant", text: "告诉我：你准备在什么时间、面对谁、完成一次怎样的表达？一段自然的话就够了。" }]);
 
   const createFromConversation = async () => {
@@ -682,7 +685,7 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
       });
       if (!understandResponse.ok) throw new Error("目标拆解失败");
       const { draft } = await understandResponse.json() as { draft: GoalDraft };
-      const knowledgeContext = documents.flatMap((document) => document.chunks.map((chunk) => chunk.text)).join("\n\n").slice(0, 10000);
+      const knowledgeContext = searchKnowledge(documents, `${draft.title} ${draft.desiredOutcome}`).map(chunk => chunk.text).join("\n\n").slice(0, 10000);
       let plan: GoalPlan = buildLocalGoalPlan(draft);
       let source = "本地模板";
       try {
@@ -715,9 +718,9 @@ function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoa
 
   return <div className="conversation-workspace">
     <section className="panel coach-chat">
-      <div className="panel-head"><div><p className="section-label">目标对话</p><h2>把目标说出来，其余交给教练</h2></div><span className="privacy-badge"><ShieldCheck size={14} /> 本地记录</span></div>
+      <div className="panel-head"><div><p className="section-label">目标对话</p><h2>把目标说出来，其余交给教练</h2></div><div className="segmented two language-mini" aria-label="对话识别语言"><button className={inputLanguage === "zh-CN" ? "active" : ""} onClick={() => setInputLanguage("zh-CN")}>中文</button><button className={inputLanguage === "en-US" ? "active" : ""} onClick={() => setInputLanguage("en-US")}>EN</button></div></div>
       <div className="coach-chat-body">{chat.map((line) => <div key={line.id} className={`coach-message ${line.role}`}><span>{line.role === "assistant" ? "教练" : "你"}</span><p>{line.text}</p></div>)}{busy && <div className="coach-message assistant pending"><span>教练</span><p>正在识别场景、日期和训练重点...</p></div>}</div>
-      <div className="chat-composer"><textarea aria-label="描述训练目标" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void createFromConversation(); } }} placeholder="例如：下个月 20 号我要向一群早期投资人做 3 分钟英文 Pitch，希望他们愿意约下一次会。" /><button className="icon-button voice-coming" disabled title="等待语音识别 API"><Mic size={18} /></button><button className="icon-button send-button" title="发送" disabled={!message.trim() || busy} onClick={() => void createFromConversation()}><Send size={18} /></button></div>
+      <div className="chat-composer"><textarea aria-label="描述训练目标" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void createFromConversation(); } }} placeholder="例如：下个月 20 号我要向一群早期投资人做 3 分钟英文 Pitch，希望他们愿意约下一次会。" /><VoiceInput key={inputLanguage} language={inputLanguage} disabled={busy} onText={text => setMessage(current => `${current}${current ? " " : ""}${text}`)} /><button className="icon-button send-button" title="发送" disabled={!message.trim() || busy} onClick={() => void createFromConversation()}><Send size={18} /></button></div>
       <p className="chat-hint">按 Enter 发送，Shift + Enter 换行。已导入的知识资料会自动参与计划生成。</p>
     </section>
 
@@ -749,12 +752,12 @@ function HumorView({ materials, documents, busy, importFiles, openKnowledge, rel
     try {
       const response = await fetch("/api/materials/organize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: userText, language }) });
       if (!response.ok) throw new Error("素材整理失败");
-      const { material } = await response.json() as { material: Omit<HumorMaterial, "id" | "createdAt" | "updatedAt"> };
+      const { material, source } = await response.json() as { material: Omit<HumorMaterial, "id" | "createdAt" | "updatedAt">; source: string };
       const now = new Date().toISOString();
       const stored: HumorMaterial = { ...material, id: crypto.randomUUID(), createdAt: now, updatedAt: now };
       await db.humorMaterials.put(stored);
       await reload();
-      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `已经替你整理为“${stored.title}”。我保留了原意，并标记了适合使用的场景和受众边界。` }]);
+      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `已经替你整理为“${stored.title}”。${source === "local" ? "当前使用本地模板，所选文本服务未配置或未成功调用。" : "我保留了原意，并标记了适合使用的场景和受众边界。"}` }]);
       setNotice("灵感已经由对话整理并保存在本机素材库。");
     } catch {
       setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "这段灵感暂时没能整理，请稍后再说一次。" }]);
@@ -765,13 +768,13 @@ function HumorView({ materials, documents, busy, importFiles, openKnowledge, rel
     <section className="material-sources" aria-label="素材导入方式">
       <button onClick={openKnowledge}><Library size={22} /><strong>外部知识库</strong><span>连接飞书文档或 Wiki</span></button>
       <label className={busy ? "disabled" : ""}><Upload size={22} /><strong>{busy ? "正在导入" : "上传文档"}</strong><span>DOCX、PDF、Markdown、TXT</span><input type="file" multiple accept=".docx,.pdf,.md,.txt" disabled={busy} onChange={(event) => void importFiles(event.target.files)} /></label>
-      <button disabled title="等待语音识别 API"><Mic size={22} /><strong>语音记录</strong><span>等待语音 API 接入</span></button>
+      <button onClick={() => { document.querySelector<HTMLButtonElement>(".material-chat .voice-input button")?.click(); }}><Mic size={22} /><strong>语音记录</strong><span>识别后确认整理</span></button>
     </section>
     <div className="humor-workspace">
       <section className="panel coach-chat material-chat">
         <div className="panel-head"><div><p className="section-label">灵感对话</p><h2>说出来，教练替你整理</h2></div><div className="segmented two language-mini"><button className={language === "zh-CN" ? "active" : ""} onClick={() => setLanguage("zh-CN")}>中文</button><button className={language === "en-US" ? "active" : ""} onClick={() => setLanguage("en-US")}>EN</button></div></div>
         <div className="coach-chat-body">{chat.map((line) => <div key={line.id} className={`coach-message ${line.role}`}><span>{line.role === "assistant" ? "教练" : "你"}</span><p>{line.text}</p></div>)}</div>
-        <div className="chat-composer"><textarea aria-label="讲述灵感素材" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void organizeMaterial(); } }} placeholder="比如：今天开会时我发现，大家说要拥抱 AI，最后最忙的是复制粘贴的人..." /><button className="icon-button voice-coming" disabled title="等待语音识别 API"><Mic size={18} /></button><button className="icon-button send-button" title="发送并整理" disabled={!message.trim() || busy} onClick={() => void organizeMaterial()}><Send size={18} /></button></div>
+        <div className="chat-composer"><textarea aria-label="讲述灵感素材" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void organizeMaterial(); } }} placeholder="比如：今天开会时我发现，大家说要拥抱 AI，最后最忙的是复制粘贴的人..." /><VoiceInput language={language} disabled={busy} onText={text => setMessage(current => `${current}${current ? " " : ""}${text}`)} /><button className="icon-button send-button" title="发送并整理" disabled={!message.trim() || busy} onClick={() => void organizeMaterial()}><Send size={18} /></button></div>
       </section>
       <section className="panel material-list"><div className="panel-head"><div><p className="section-label">自动整理 · 仅存本机</p><h2>{materials.length} 条灵感素材</h2></div><span className="library-count">另有 {documents.length} 份知识资料</span></div>{!materials.length && <div className="empty-copy">这里没有需要填写的表单。讲一段经历或观察，教练会自动整理。</div>}{materials.map((item) => <article className="material-row" key={item.id}><div><span>{item.language === "en-US" ? "English" : "中文"}</span><strong>{item.title}</strong><p>{item.content}</p><small>边界：{item.audienceBoundary}</small></div><button className="icon-button" title="删除素材" onClick={async () => { await db.humorMaterials.delete(item.id); await reload(); }}><Trash2 size={16} /></button></article>)}</section>
     </div>

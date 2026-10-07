@@ -53,7 +53,7 @@ test("records locally and never posts video or landmark data", async ({ page, co
   await page.getByRole("button", { name: "结束并复盘" }).click();
 
   await expect(page.getByRole("heading", { name: "练习复盘", level: 1 })).toBeVisible({ timeout: 15_000 });
-  expect(postedBodies.some(({ url }) => url.endsWith("/api/realtime/session"))).toBeTruthy();
+  expect(postedBodies.some(({ url }) => url.endsWith("/api/speech/session"))).toBeTruthy();
   for (const { body } of postedBodies) {
     expect(body).not.toContain("m=video");
     expect(body).not.toContain("faceLandmarks");

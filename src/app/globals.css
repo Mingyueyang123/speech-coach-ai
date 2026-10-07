@@ -300,6 +300,26 @@ legend { color: var(--muted); font-size: 11px; font-weight: 800; padding: 0 5px;
 .metric-card { background: #fff; padding: 15px; }
 .metric-card span { display: block; color: var(--muted); font-size: 11px; }
 .metric-card strong { display: block; margin-top: 5px; font-size: 22px; }
+.provider-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 18px 0; }
+.provider-options button { display: flex; flex-direction: column; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: white; text-align: left; min-width: 0; }
+.provider-options button.active { border-color: var(--green); background: #f2faf6; }
+.provider-options span { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.provider-detail { border-block: 1px solid var(--line); padding: 16px 0; margin-bottom: 16px; }
+.provider-tests { margin-top: 18px; }
+.api-settings select { max-width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); background: white; border-radius: 5px; }
+.provider-detail h3 { margin: 0; font-size: 17px; }
+.voice-selection { display: grid; gap: 10px; }
+.voice-input { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.voice-input > span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; max-width: 280px; }
+.voice-input .recording { color: #b73339; background: #fff1f2; }
+.chat-composer textarea { grid-column: 1; grid-row: 1; }
+.chat-composer .voice-input { display: contents; }
+.chat-composer .voice-input > button { grid-column: 2; grid-row: 1; }
+.chat-composer .send-button { grid-column: 3; grid-row: 1; }
+.chat-composer .voice-input > span { grid-column: 1 / -1; grid-row: 2; max-width: none; }
+.settings-actions { flex-wrap: wrap; }
+.settings-actions > select { width: auto; }
+@media (max-width: 720px) { .provider-options { grid-template-columns: 1fr; } .panel-head.compact { flex-wrap: wrap; gap: 10px; } }
 .timeline-panel { padding-bottom: 17px; }
 .timeline-chart { display: flex; align-items: end; gap: 3px; height: 130px; margin: 0 17px; border-bottom: 1px solid var(--line); }
 .timeline-column { position: relative; flex: 1; height: 100%; }

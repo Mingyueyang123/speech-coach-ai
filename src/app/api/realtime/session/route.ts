@@ -75,7 +75,7 @@ export async function POST(request: Request) {
     audio: {
       input: {
         transcription: { model: "gpt-4o-mini-transcribe", language: parsed.data.scenario.language === "en-US" ? "en" : "zh" },
-        turn_detection: { type: "server_vad", create_response: true, interrupt_response: true },
+        turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
       },
       output: { voice: "marin" },
     },
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
   try {
     const upstream = await fetch("https://api.openai.com/v1/realtime/calls", {
       method: "POST",
-      signal: AbortSignal.timeout(18000),
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(18000)]),
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
     });

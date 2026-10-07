@@ -1,4 +1,5 @@
 import { getConfig } from "@/lib/server-config";
+import { createTextProvider, textConfigured } from "@/lib/providers/text";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildLocalGoalPlan } from "@/lib/goals";
@@ -28,19 +29,12 @@ const planSchema = z.object({
   prompts: z.array(z.string()).min(2).max(8), milestones: z.array(z.string()).min(3).max(8),
 });
 
-function outputText(payload: unknown): string {
-  if (!payload || typeof payload !== "object") return "";
-  const data = payload as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
-  return data.output_text ?? data.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("") ?? "";
-}
-
 export async function POST(request: Request) {
   const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "目标计划参数无效。" }, { status: 400 });
   const fallback = buildLocalGoalPlan(parsed.data.goal);
-  const apiKey = config.OPENAI_API_KEY;
-  if (!apiKey) return NextResponse.json({ plan: fallback, source: "local" });
+  if (!textConfigured(config)) return NextResponse.json({ plan: fallback, source: "local" });
 
   const isEnglish = parsed.data.goal.language === "en-US";
   const prompt = [
@@ -55,13 +49,7 @@ export async function POST(request: Request) {
     "JSON: script, cues, rubric, audiencePersona, prompts, milestones.",
   ].join("\n");
   try {
-    const upstream = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: config.OPENAI_REVIEW_MODEL || "gpt-5-mini", input: prompt }),
-    });
-    if (!upstream.ok) return NextResponse.json({ plan: fallback, source: "local" });
-    const text = outputText(await upstream.json()).replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
+    const text = await createTextProvider(config).generate(prompt, request.signal);
     return NextResponse.json({ plan: planSchema.parse(JSON.parse(text)), source: "ai" });
   } catch {
     return NextResponse.json({ plan: fallback, source: "local" });

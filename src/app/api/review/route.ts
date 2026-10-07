@@ -1,4 +1,5 @@
 import { getConfig } from "@/lib/server-config";
+import { createTextProvider, textConfigured } from "@/lib/providers/text";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -33,19 +34,11 @@ const requestSchema = z.object({
   knowledgeContext: z.string().max(12000).default(""),
 });
 
-function extractOutputText(payload: unknown): string {
-  if (!payload || typeof payload !== "object") return "";
-  const data = payload as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
-  if (data.output_text) return data.output_text;
-  return data.output?.flatMap((item) => item.content ?? []).map((content) => content.text ?? "").join("") ?? "";
-}
-
 export async function POST(request: Request) {
   const config = await getConfig();
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "复盘参数无效。" }, { status: 400 });
-  const apiKey = config.OPENAI_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "AI_REVIEW_NOT_CONFIGURED" }, { status: 503 });
+  if (!textConfigured(config)) return NextResponse.json({ error: "AI_REVIEW_NOT_CONFIGURED", source: "local" }, { status: 503 });
 
   const isEnglish = parsed.data.scenario.language === "en-US";
   const prompt = [
@@ -62,16 +55,8 @@ export async function POST(request: Request) {
     "JSON 字段：overallScore, summary, strengths(恰好3条), improvements(恰好3条), nextPractice, dimensions{content,structure,delivery,interaction,visualPresence}。",
   ].join("\n");
 
-  const upstream = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.OPENAI_REVIEW_MODEL || "gpt-5-mini", input: prompt }),
-  });
-  if (!upstream.ok) {
-    return NextResponse.json({ error: "AI_REVIEW_FAILED" }, { status: upstream.status });
-  }
-  const text = extractOutputText(await upstream.json());
   try {
+    const text = await createTextProvider(config).generate(prompt, request.signal);
     const jsonText = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
     const review = reviewSchema.parse(JSON.parse(jsonText));
     return NextResponse.json(review);

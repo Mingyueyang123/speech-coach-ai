@@ -144,6 +144,9 @@ export interface ConversationTurn {
 }
 
 export interface SessionRecord {
+  providers?: import("./providers/contracts").ProviderSnapshot;
+  sceneEvents?: import("./immersive").SceneEvent[];
+  immersiveScenarioId?: string;
   id: string;
   scenarioId: string;
   goalId?: string;
