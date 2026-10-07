@@ -1,6 +1,9 @@
-import type { DeliveryMetrics, MetricPoint, PracticeScenario, ReviewReport } from "./types";
+import type { DeliveryMetrics, MetricPoint, PracticeScenario, ReviewReport, TrainingLanguage } from "./types";
 
-const FILLERS = /然后|就是|其实|那个|呃|嗯|啊|you know|basically/gi;
+const FILLERS = {
+  "zh-CN": /然后|就是|其实|那个|呃|嗯|啊/gi,
+  "en-US": /\b(?:um+|uh+|like|you know|basically|actually|so)\b/gi,
+};
 
 function average(values: number[]): number {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
@@ -16,15 +19,18 @@ export function calculateDeliveryMetrics(
   transcript: string,
   durationMs: number,
   points: MetricPoint[],
+  language: TrainingLanguage = "zh-CN",
 ): DeliveryMetrics {
-  const compact = transcript.replace(/\s+/g, "").trim();
+  const unitCount = language === "en-US"
+    ? transcript.trim().split(/\s+/).filter(Boolean).length
+    : Array.from(transcript.replace(/\s+/g, "")).length;
   const minutes = Math.max(durationMs / 60000, 1 / 60);
   const volumes = points.map((point) => point.volume);
 
   return {
-    wordsPerMinute: Math.round(compact.length / minutes),
-    fillerCount: (transcript.match(FILLERS) ?? []).length,
-    pauseCount: Math.max(0, Math.round(durationMs / 10000) - Math.ceil(compact.length / 80)),
+    wordsPerMinute: Math.round(unitCount / minutes),
+    fillerCount: (transcript.match(FILLERS[language]) ?? []).length,
+    pauseCount: Math.max(0, Math.round(durationMs / 10000) - Math.ceil(unitCount / (language === "en-US" ? 25 : 80))),
     averageVolume: Math.round(average(volumes) * 100),
     volumeVariation: Math.round(standardDeviation(volumes) * 100),
     cameraFacingRatio: Math.round(average(points.map((point) => point.cameraFacing)) * 100),
@@ -45,18 +51,41 @@ export function buildLocalReview(
   metrics: DeliveryMetrics,
   scenario: PracticeScenario,
 ): ReviewReport {
-  const covered = scenario.outline.filter((item) => transcript.includes(item.slice(0, 4))).length;
+  const covered = scenario.cues.filter((item) => transcript.toLocaleLowerCase(scenario.language).includes(item.slice(0, 4).toLocaleLowerCase(scenario.language))).length;
   const questionCount = (transcript.match(/[?？]/g) ?? []).length;
   const content = clampScore(45 + covered * 9 + Math.min(20, transcript.length / 30));
   const structure = clampScore(50 + covered * 10);
   const delivery = clampScore(
     75 - metrics.fillerCount * 4 - Math.max(0, metrics.wordsPerMinute - 260) / 4 + metrics.volumeVariation / 3,
   );
-  const interaction = clampScore(45 + questionCount * 14 + (transcript.includes("请") ? 12 : 0));
+  const interaction = clampScore(45 + questionCount * 14 + (/请|please/i.test(transcript) ? 12 : 0));
   const visualPresence = clampScore(
     metrics.cameraFacingRatio * 0.55 + metrics.handsVisibleRatio * 0.2 + (100 - metrics.bodySway) * 0.25,
   );
   const overallScore = clampScore((content + structure + delivery + interaction + visualPresence) / 5);
+
+  if (scenario.language === "en-US") {
+    return {
+      overallScore,
+      summary: `This round scored ${overallScore}. Prioritize “${scenario.rubric[0]}” and a stronger connection with the audience next.`,
+      strengths: [
+        content >= 70 ? "The central message was clear enough for the audience to follow." : "You completed a full attempt and created useful material to review.",
+        metrics.cameraFacingRatio >= 65 ? "You maintained a steady visual connection with the audience." : "Your delivery included visible changes in pace and emphasis.",
+        metrics.fillerCount <= 3 ? "Filler words were controlled and the language stayed clean." : "The key ideas are present and can now be made more concise.",
+      ],
+      improvements: [
+        metrics.wordsPerMinute > 180 ? "Slow down around conclusions and numbers, leaving a short pause before and after them." : "Move the main claim earlier so the opening reaches the point faster.",
+        metrics.cameraFacingRatio < 65 ? "Reconnect with the camera at the end of each section instead of staying on the script." : "Reduce small body movement before key lines to create a steadier visual center.",
+        interaction < 70 ? "Add one question the audience can answer immediately." : "After a question, leave enough silence for the audience to respond.",
+      ],
+      nextPractice: [
+        "Deliver a 30-second version with one problem, one claim, and one action.",
+        `Answer “${scenario.prompts[0]}” in no more than 45 seconds.`,
+        "Move to the next round with fewer or no notes.",
+      ],
+      dimensions: { content, structure, delivery, interaction, visualPresence },
+    };
+  }
 
   const strengths = [
     content >= 70 ? "内容主线比较清楚，听众能知道你希望他们记住什么。" : "已经完成了一轮完整表达，具备可复盘的素材。",
@@ -78,7 +107,7 @@ export function buildLocalReview(
     nextPractice: [
       "用 30 秒版本重讲一次，只保留一个问题、一个判断和一个行动。",
       `针对听众问题“${scenario.prompts[0]}”做一次不超过 45 秒的回答。`,
-      "隐藏完整台词，只看提纲再练一轮。",
+      "进入下一轮，用更少的提示完成表达。",
     ],
     dimensions: { content, structure, delivery, interaction, visualPresence },
   };

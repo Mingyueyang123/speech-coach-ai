@@ -2,16 +2,25 @@ import { expect, test } from "@playwright/test";
 
 test("keeps the teleprompter mapped to the selected scenario", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "暂时跳过" }).click();
 
   await expect(page.getByRole("heading", { name: "投资人 Pitch", level: 2 })).toBeVisible();
-  await page.getByRole("button", { name: "客户方案路演" }).first().click();
-  await page.getByRole("button", { name: "提纲" }).click();
+  await page.getByRole("button", { name: "客户路演" }).first().click();
+  await page.getByRole("button", { name: /第 2 轮关键词/ }).click();
 
   await expect(page.getByRole("heading", { name: "客户方案路演", level: 2 })).toBeVisible();
   await expect(page.getByText("1. 客户现状", { exact: false })).toBeVisible();
 
-  await page.getByRole("button", { name: "隐藏" }).click();
+  await page.getByRole("button", { name: /第 3 轮脱稿/ }).click();
   await expect(page.getByText("台词已隐藏")).toBeVisible();
+});
+
+test("switches the full practice chain to English", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "暂时跳过" }).click();
+  await page.getByRole("button", { name: "English" }).click();
+  await expect(page.getByRole("heading", { name: "Investor Pitch", level: 2 })).toBeVisible();
+  await expect(page.getByText("Hello, I am building an AI product", { exact: false })).toBeVisible();
 });
 
 test("records locally and never posts video or landmark data", async ({ page, context }) => {
@@ -24,8 +33,12 @@ test("records locally and never posts video or landmark data", async ({ page, co
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "开始练习" }).click();
+  await page.getByRole("button", { name: "暂时跳过" }).click();
+  await page.getByRole("button", { name: "用这段练习" }).click();
   await expect(page.getByRole("button", { name: "结束并复盘" })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "收起摄像头" }).click();
+  await expect(page.getByRole("heading", { name: "画面已收起 · 仍在录制" })).toBeVisible();
+  await page.getByRole("button", { name: "展开摄像头" }).click();
   await page.waitForTimeout(1_200);
   await page.getByRole("button", { name: "结束并复盘" }).click();
 

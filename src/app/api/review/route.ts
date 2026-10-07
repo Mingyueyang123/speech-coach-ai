@@ -27,6 +27,7 @@ const requestSchema = z.object({
   metrics: metricsSchema,
   scenario: z.object({
     title: z.string(), goal: z.string(), rubric: z.array(z.string()), prompts: z.array(z.string()),
+    language: z.enum(["zh-CN", "en-US"]),
   }),
   knowledgeContext: z.string().max(12000).default(""),
 });
@@ -44,10 +45,12 @@ export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "AI_REVIEW_NOT_CONFIGURED" }, { status: 503 });
 
+  const isEnglish = parsed.data.scenario.language === "en-US";
   const prompt = [
-    "你是专业中文演讲教练。请基于转写、可观察指标和场景目标生成复盘。",
+    isEnglish ? "You are a professional English speech coach. Review the transcript using observable metrics and the scenario goal." : "你是专业中文演讲教练。请基于转写、可观察指标和场景目标生成复盘。",
+    isEnglish ? "Do not rate the speaker's accent. Focus on clarity, fluency, pacing, structure, and audience connection." : "英文模式不评价口音；中文模式也不做身份或地域推断。",
     "不要从面部和姿态推断心理、人格、疾病或是否诚实；只描述可观察行为。",
-    "分数均为 0-100。必须严格输出 JSON，不要 Markdown。",
+    isEnglish ? "All scores are 0-100. Return strict JSON without Markdown, with all feedback text in English." : "分数均为 0-100。必须严格输出 JSON，不要 Markdown。",
     `场景：${parsed.data.scenario.title}`,
     `目标：${parsed.data.scenario.goal}`,
     `评分标准：${parsed.data.scenario.rubric.join("；")}`,

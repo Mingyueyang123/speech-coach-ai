@@ -22,4 +22,12 @@ describe("delivery analysis", () => {
     expect(review.overallScore).toBeGreaterThanOrEqual(0);
     expect(review.overallScore).toBeLessThanOrEqual(100);
   });
+
+  it("uses English word counts and filler words without accent scoring", () => {
+    const metrics = calculateDeliveryMetrics("Um, we actually start with the customer problem.", 30_000, [], "en-US");
+    const review = buildLocalReview("We start with the customer problem.", metrics, SCENARIOS[3]);
+    expect(metrics.wordsPerMinute).toBe(16);
+    expect(metrics.fillerCount).toBe(2);
+    expect(JSON.stringify(review).toLowerCase()).not.toContain("accent");
+  });
 });
