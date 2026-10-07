@@ -3,11 +3,11 @@
 import {
   ArrowRight, Camera, Check, ChevronDown, ChevronRight, ChevronUp,
   CircleStop, Download, EyeOff, FileText, Gauge, GripHorizontal, Import,
-  Languages, Library, Lightbulb, Maximize2, Mic, Play, Plus,
+  Languages, Library, Lightbulb, Maximize2, MessageCircle, Mic, Play, Send,
   Power, RotateCcw, ShieldCheck, Sparkles, Target, Trash2, Upload, Users, Video,
   X,
 } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMediaSession } from "@/hooks/useMediaSession";
 import { buildLocalReview, calculateDeliveryMetrics } from "@/lib/analysis";
 import { db } from "@/lib/db";
@@ -18,8 +18,8 @@ import { connectRealtime, type RealtimeConnection } from "@/lib/realtime-client"
 import { getScenario, getScenarioByKind, SCENARIOS } from "@/lib/scenarios";
 import { findSpeechProgress, progressToSection } from "@/lib/speech-follow";
 import type {
-  AppPreferences, AudienceIntensity, ConversationTurn, GoalPlan, HumorLevel,
-  HumorMaterial, HumorMaterialType, KnowledgeDocument, PracticeScenario,
+  AppPreferences, AudienceIntensity, ConversationTurn, GoalPlan,
+  HumorMaterial, KnowledgeDocument, PracticeScenario,
   ReviewReport, ScenarioKind, ScrollMode, SessionRecord, TeleprompterMode,
   TrainingGoal, TrainingLanguage, UserProfile,
 } from "@/lib/types";
@@ -50,26 +50,15 @@ const TAB_LABELS: Array<{ id: AppTab; label: string; icon: typeof Mic }> = [
   { id: "practice", label: "练习", icon: Mic },
   { id: "goals", label: "目标", icon: Target },
   { id: "knowledge", label: "知识库", icon: Library },
-  { id: "humor", label: "幽默素材", icon: Lightbulb },
+  { id: "humor", label: "灵感素材", icon: Lightbulb },
   { id: "review", label: "复盘", icon: Gauge },
 ];
 
 const INTENSITY_LABELS: Record<AudienceIntensity, string> = { friendly: "友好", balanced: "正常", challenging: "挑战" };
 const ROUND_LABELS: Record<TeleprompterMode, string> = { full: "完整台词", cues: "关键词", hidden: "脱稿" };
 const SCENARIO_LABELS: Record<ScenarioKind, string> = { "investor-pitch": "投资人 Pitch", "client-roadshow": "客户路演", "live-speaking": "线下演讲 / 主持" };
-const HUMOR_TYPE_LABELS: Record<HumorMaterialType, string> = {
-  observation: "观察", story: "个人故事", analogy: "类比", contrast: "反差",
-  "self-deprecation": "自嘲", callback: "回扣", interaction: "现场互动",
-};
-
 function formatTime(totalSeconds: number): string {
   return `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
-}
-
-function todayPlus(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
 }
 
 function MetricCard({ label, value, suffix = "" }: { label: string; value: number; suffix?: string }) {
@@ -469,7 +458,7 @@ export function SpeechCoachApp() {
   const headerTitle = activeTab === "practice" ? scenario.description
     : activeTab === "goals" ? "目标中心"
       : activeTab === "knowledge" ? "知识库"
-        : activeTab === "humor" ? "幽默方法与个人素材"
+        : activeTab === "humor" ? "灵感素材库"
           : "练习复盘";
 
   return (
@@ -518,13 +507,13 @@ export function SpeechCoachApp() {
           />
         )}
 
-        {activeTab === "goals" && <GoalsView goals={goals} documents={documents} humorMaterials={humorMaterials} profile={profile} busy={goalBusy} setBusy={setGoalBusy} reload={reloadLocalData} chooseGoal={chooseGoal} setNotice={setNotice} />}
+        {activeTab === "goals" && <GoalsView goals={goals} documents={documents} profile={profile} busy={goalBusy} setBusy={setGoalBusy} reload={reloadLocalData} chooseGoal={chooseGoal} setNotice={setNotice} />}
         {activeTab === "knowledge" && <KnowledgeView documents={documents} busy={knowledgeBusy} feishuUrl={feishuUrl} setFeishuUrl={setFeishuUrl} importFiles={importFiles} importFeishu={importFeishu} deleteDocument={async (id) => { await db.documents.delete(id); await reloadLocalData(); }} />}
-        {activeTab === "humor" && <HumorView materials={humorMaterials} reload={reloadLocalData} setNotice={setNotice} />}
+        {activeTab === "humor" && <HumorView materials={humorMaterials} documents={documents} busy={knowledgeBusy} importFiles={importFiles} openKnowledge={() => setActiveTab("knowledge")} reload={reloadLocalData} setNotice={setNotice} />}
         {activeTab === "review" && <ReviewView latestSession={latestSession} sessions={sessions} review={review} goals={goals} selectRound={selectRound} setActiveTab={setActiveTab} setLatestSession={(session) => { setLatestSession(session); setReview(buildLocalReview(session.transcript, session.metrics, getScenario(session.scenarioId))); }} downloadRecording={downloadRecording} deleteSession={deleteSession} />}
       </section>
 
-      {onboardingOpen && <OnboardingModal initial={profile ?? DEFAULT_PROFILE} onClose={() => { setOnboardingOpen(false); void savePreferences({ onboardingDismissed: true }); }} onSave={async (next) => { await db.profiles.put(next); setProfile(next); setOnboardingOpen(false); setNotice("个人目标已保存在本机。现在可以创建第一个训练目标。"); setActiveTab("goals"); }} />}
+      {onboardingOpen && <OnboardingModal onClose={() => { setOnboardingOpen(false); void savePreferences({ onboardingDismissed: true }); }} onStart={async () => { const next = { ...DEFAULT_PROFILE, onboardingComplete: true, updatedAt: new Date().toISOString() }; await db.profiles.put(next); setProfile(next); setOnboardingOpen(false); setNotice("不用先填画像，直接告诉教练你准备面对谁、在什么时候讲什么。"); setActiveTab("goals"); }} />}
     </main>
   );
 }
@@ -617,71 +606,85 @@ function PracticeView({
   </>;
 }
 
-function GoalsView({ goals, documents, humorMaterials, profile, busy, setBusy, reload, chooseGoal, setNotice }: {
-  goals: TrainingGoal[]; documents: KnowledgeDocument[]; humorMaterials: HumorMaterial[]; profile: UserProfile | null;
+interface GoalDraft {
+  title: string;
+  scenarioKind: ScenarioKind;
+  targetDate: string;
+  audience: string;
+  desiredOutcome: string;
+  durationSeconds: number;
+  language: TrainingLanguage;
+  humorLevel: "none" | "light" | "medium";
+  successCriteria: string[];
+}
+
+interface ChatLine { id: string; role: "assistant" | "user"; text: string }
+
+function GoalsView({ goals, documents, profile, busy, setBusy, reload, chooseGoal, setNotice }: {
+  goals: TrainingGoal[]; documents: KnowledgeDocument[]; profile: UserProfile | null;
   busy: boolean; setBusy: (value: boolean) => void; reload: () => Promise<void>; chooseGoal: (goal: TrainingGoal) => Promise<void>;
   setNotice: (value: string) => void;
 }) {
-  const [title, setTitle] = useState("");
-  const [scenarioKind, setScenarioKind] = useState<ScenarioKind>("live-speaking");
-  const [language, setLanguage] = useState<TrainingLanguage>(profile?.languages[0] ?? "zh-CN");
-  const [targetDate, setTargetDate] = useState(todayPlus(21));
-  const [audience, setAudience] = useState("");
-  const [desiredOutcome, setDesiredOutcome] = useState("");
-  const [durationSeconds, setDurationSeconds] = useState(180);
-  const [humorLevel, setHumorLevel] = useState<HumorLevel>("light");
-  const [successCriteria, setSuccessCriteria] = useState("结构完整\n表达自然\n听众愿意进入下一步");
-  const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
-  const [selectedHumor, setSelectedHumor] = useState<string[]>([]);
+  const [message, setMessage] = useState("");
+  const [chat, setChat] = useState<ChatLine[]>([{ id: "welcome", role: "assistant", text: "告诉我：你准备在什么时间、面对谁、完成一次怎样的表达？一段自然的话就够了。" }]);
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const createFromConversation = async () => {
+    const userText = message.trim();
+    if (!userText || busy) return;
+    setMessage("");
+    setChat((current) => [...current, { id: crypto.randomUUID(), role: "user", text: userText }]);
     setBusy(true);
-    const now = new Date().toISOString();
-    const goalBase = { title: title.trim(), scenarioKind, targetDate, audience, desiredOutcome, durationSeconds, language, humorLevel, successCriteria: successCriteria.split(/\n|，|,/).map((item) => item.trim()).filter(Boolean) };
-    const knowledgeContext = documents.filter((document) => selectedDocs.includes(document.id)).flatMap((document) => document.chunks.map((chunk) => chunk.text)).join("\n\n").slice(0, 10000);
-    const humorContext = humorMaterials.filter((item) => selectedHumor.includes(item.id)).map((item) => `${item.title}: ${item.content}`).join("\n").slice(0, 4000);
-    let plan: GoalPlan = buildLocalGoalPlan(goalBase);
-    let source = "本地模板";
     try {
-      const response = await fetch("/api/goals/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: profile ?? undefined, goal: goalBase, knowledgeContext, humorContext }) });
-      if (response.ok) { const payload = await response.json() as { plan: GoalPlan; source: string }; plan = payload.plan; source = payload.source === "ai" ? "AI" : "本地模板"; }
-    } catch { /* Local plan already exists. */ }
-    const goal: TrainingGoal = { id: crypto.randomUUID(), ...goalBase, knowledgeDocumentIds: selectedDocs, humorMaterialIds: selectedHumor, plan, rounds: createPracticeRounds(), createdAt: now, updatedAt: now };
-    await db.goals.put(goal);
-    await reload();
-    setBusy(false);
-    setTitle("");
-    setNotice(`目标已创建，计划来自${source}。台词和关键词可继续编辑。`);
-    await chooseGoal(goal);
+      const understandResponse = await fetch("/api/goals/understand", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userText, profile: profile ?? undefined }),
+      });
+      if (!understandResponse.ok) throw new Error("目标拆解失败");
+      const { draft } = await understandResponse.json() as { draft: GoalDraft };
+      const knowledgeContext = documents.flatMap((document) => document.chunks.map((chunk) => chunk.text)).join("\n\n").slice(0, 10000);
+      let plan: GoalPlan = buildLocalGoalPlan(draft);
+      let source = "本地模板";
+      try {
+        const response = await fetch("/api/goals/plan", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: profile ?? undefined, goal: draft, knowledgeContext, humorContext: "" }),
+        });
+        if (response.ok) {
+          const payload = await response.json() as { plan: GoalPlan; source: string };
+          plan = payload.plan;
+          source = payload.source === "ai" ? "AI" : "本地模板";
+        }
+      } catch { /* The structured local plan remains available. */ }
+      const now = new Date().toISOString();
+      const goal: TrainingGoal = {
+        id: crypto.randomUUID(), ...draft, knowledgeDocumentIds: documents.map((document) => document.id),
+        humorMaterialIds: [], plan, rounds: createPracticeRounds(), createdAt: now, updatedAt: now,
+      };
+      await db.goals.put(goal);
+      await reload();
+      setChat((current) => [...current, {
+        id: crypto.randomUUID(), role: "assistant",
+        text: `我已经整理好了：${SCENARIO_LABELS[draft.scenarioKind]}，目标日期 ${draft.targetDate}，面向${draft.audience}。训练目标是“${draft.desiredOutcome}”。三轮计划来自${source}。`,
+      }]);
+      setNotice("目标已从对话中拆解并保存。确认后可以直接开始第一轮。");
+    } catch {
+      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "我暂时没能整理这段话。请再说一次，最好带上场合、对象和日期。" }]);
+    } finally { setBusy(false); }
   };
 
-  const updatePlan = async (goal: TrainingGoal, plan: GoalPlan) => { await db.goals.put({ ...goal, plan, updatedAt: new Date().toISOString() }); await reload(); };
-  return <div className="goals-layout">
-    <form className="panel goal-form" onSubmit={submit}>
-      <div className="panel-head"><div><p className="section-label">新训练目标</p><h2>先定义你想让听众做什么</h2></div></div>
-      <div className="form-grid">
-        <label className="span-2">目标名称<input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：Demo Day 三分钟融资陈述" /></label>
-        <label>场景<select value={scenarioKind} onChange={(event) => { const value = event.target.value as ScenarioKind; setScenarioKind(value); if (value !== "live-speaking" && humorLevel === "medium") setHumorLevel("light"); }}>{Object.entries(SCENARIO_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label>语言<select value={language} onChange={(event) => setLanguage(event.target.value as TrainingLanguage)}><option value="zh-CN">中文</option><option value="en-US">English</option></select></label>
-        <label>目标日期<input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} /></label>
-        <label>时长（秒）<input type="number" min="30" max="3600" value={durationSeconds} onChange={(event) => setDurationSeconds(Number(event.target.value))} /></label>
-        <label className="span-2">目标听众<textarea value={audience} onChange={(event) => setAudience(event.target.value)} placeholder="他们是谁、懂多少、最在意什么" /></label>
-        <label className="span-2">期望结果<textarea required value={desiredOutcome} onChange={(event) => setDesiredOutcome(event.target.value)} placeholder="练完以后，希望听众理解、相信或采取什么行动" /></label>
-        <label>幽默程度<select value={humorLevel} onChange={(event) => setHumorLevel(event.target.value as HumorLevel)}><option value="none">不需要</option><option value="light">轻度</option><option value="medium">适中</option></select></label>
-        <label className="span-2">成功标准<textarea value={successCriteria} onChange={(event) => setSuccessCriteria(event.target.value)} /></label>
-      </div>
-      {!!documents.length && <fieldset><legend>关联知识材料</legend>{documents.map((document) => <label className="check-row" key={document.id}><input type="checkbox" checked={selectedDocs.includes(document.id)} onChange={() => setSelectedDocs((current) => current.includes(document.id) ? current.filter((id) => id !== document.id) : [...current, document.id])} />{document.title}</label>)}</fieldset>}
-      {!!humorMaterials.length && <fieldset><legend>关联个人幽默素材</legend>{humorMaterials.map((item) => <label className="check-row" key={item.id}><input type="checkbox" checked={selectedHumor.includes(item.id)} onChange={() => setSelectedHumor((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />{item.title}</label>)}</fieldset>}
-      <button className="button primary" disabled={busy || !title.trim() || !desiredOutcome.trim()}><Sparkles size={16} />{busy ? "正在生成训练计划" : "生成三轮计划"}</button>
-    </form>
+  return <div className="conversation-workspace">
+    <section className="panel coach-chat">
+      <div className="panel-head"><div><p className="section-label">目标对话</p><h2>把目标说出来，其余交给教练</h2></div><span className="privacy-badge"><ShieldCheck size={14} /> 本地记录</span></div>
+      <div className="coach-chat-body">{chat.map((line) => <div key={line.id} className={`coach-message ${line.role}`}><span>{line.role === "assistant" ? "教练" : "你"}</span><p>{line.text}</p></div>)}{busy && <div className="coach-message assistant pending"><span>教练</span><p>正在识别场景、日期和训练重点...</p></div>}</div>
+      <div className="chat-composer"><textarea aria-label="描述训练目标" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void createFromConversation(); } }} placeholder="例如：下个月 20 号我要向一群早期投资人做 3 分钟英文 Pitch，希望他们愿意约下一次会。" /><button className="icon-button voice-coming" disabled title="等待语音识别 API"><Mic size={18} /></button><button className="icon-button send-button" title="发送" disabled={!message.trim() || busy} onClick={() => void createFromConversation()}><Send size={18} /></button></div>
+      <p className="chat-hint">按 Enter 发送，Shift + Enter 换行。已导入的知识资料会自动参与计划生成。</p>
+    </section>
 
     <section className="goal-list">
       {!goals.length && <div className="panel no-review"><Target size={34} /><h2>还没有训练目标</h2><p>创建目标后，系统会为同一场景安排完整台词、关键词和脱稿三轮。</p></div>}
       {goals.map((goal) => <article className="panel goal-item" key={goal.id}>
         <div className="goal-item-head"><div><p className="section-label">{SCENARIO_LABELS[goal.scenarioKind]} · {goal.language === "en-US" ? "English" : "中文"}</p><h2>{goal.title}</h2><span>{goal.targetDate || "未设日期"} · {Math.round(goal.durationSeconds / 60)} 分钟</span></div><button className="button primary" onClick={() => void chooseGoal(goal)}><Play size={16} />继续训练</button></div>
         <div className="round-mini">{goal.rounds.map((round) => <span key={round.index} className={round.status}><b>{round.status === "completed" ? "✓" : round.index}</b>{ROUND_LABELS[round.mode]}{round.score !== undefined && <em>{round.score}</em>}</span>)}</div>
-        <details><summary>编辑台词与关键词</summary><label>完整台词<textarea value={goal.plan.script} onChange={(event) => void updatePlan(goal, { ...goal.plan, script: event.target.value })} /></label><label>关键词（每行一个）<textarea value={goal.plan.cues.join("\n")} onChange={(event) => void updatePlan(goal, { ...goal.plan, cues: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} /></label></details>
         <button className="icon-button goal-delete" title="删除目标" onClick={async () => { await db.goals.delete(goal.id); await reload(); }}><Trash2 size={16} /></button>
       </article>)}
     </section>
@@ -692,19 +695,47 @@ function KnowledgeView({ documents, busy, feishuUrl, setFeishuUrl, importFiles, 
   return <div className="knowledge-layout"><section className="panel import-panel"><div className="panel-head"><div><p className="section-label">本地资料</p><h2>导入你的知识与台本</h2></div><span className="privacy-badge"><ShieldCheck size={14} /> 存在浏览器内</span></div><label className="upload-zone"><Upload size={28} /><strong>{busy ? "正在处理资料" : "选择 DOCX、PDF、Markdown 或 TXT"}</strong><span>文件会在本机解析和建立索引</span><input type="file" multiple accept=".docx,.pdf,.md,.txt" onChange={(event) => void importFiles(event.target.files)} disabled={busy} /></label><div className="divider"><span>或连接云端</span></div><div className="feishu-import"><input value={feishuUrl} onChange={(event) => setFeishuUrl(event.target.value)} placeholder="粘贴飞书 docx 或 wiki 链接" /><button className="button primary" onClick={() => void importFeishu()} disabled={busy || !feishuUrl.trim()}><Import size={16} />读取飞书</button></div><p className="helper-text">飞书连接器需要在 `.env.local` 配置只读应用凭证。</p></section><section className="panel library-panel"><div className="panel-head"><div><p className="section-label">资料库</p><h2>{documents.length} 份可用资料</h2></div></div><div className="document-list">{!documents.length && <div className="empty-copy">导入资料后，目标生成器和真实听众会使用相关片段。</div>}{documents.map((document) => <div className="document-row" key={document.id}><div className="document-icon">{document.source === "feishu" ? <Library size={19} /> : <FileText size={19} />}</div><div><strong>{document.title}</strong><span>{document.source === "feishu" ? "飞书" : "本地文件"} · {document.chunks.length} 个片段</span></div><button className="icon-button" title="删除资料" onClick={() => void deleteDocument(document.id)}><Trash2 size={17} /></button></div>)}</div></section></div>;
 }
 
-function HumorView({ materials, reload, setNotice }: { materials: HumorMaterial[]; reload: () => Promise<void>; setNotice: (value: string) => void }) {
-  const [type, setType] = useState<HumorMaterialType>("observation");
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
+function HumorView({ materials, documents, busy, importFiles, openKnowledge, reload, setNotice }: { materials: HumorMaterial[]; documents: KnowledgeDocument[]; busy: boolean; importFiles: (files: FileList | null) => Promise<void>; openKnowledge: () => void; reload: () => Promise<void>; setNotice: (value: string) => void }) {
+  const [message, setMessage] = useState("");
+  const [chat, setChat] = useState<ChatLine[]>([{ id: "material-welcome", role: "assistant", text: "想到什么就直接说，不用先分类。我会帮你整理成以后能用于演讲、故事或幽默表达的素材。" }]);
   const [language, setLanguage] = useState<TrainingLanguage>("zh-CN");
-  const [boundary, setBoundary] = useState("不涉及个人隐私，不攻击具体个人或群体");
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    const now = new Date().toISOString();
-    await db.humorMaterials.put({ id: crypto.randomUUID(), type, title, content, language, scenarioKinds: ["live-speaking"], audienceBoundary: boundary, sensitiveTopics: [], tags: [], createdAt: now, updatedAt: now });
-    setTitle(""); setContent(""); await reload(); setNotice("幽默素材已保存在本机，可关联到训练目标。");
+
+  const organizeMaterial = async () => {
+    const userText = message.trim();
+    if (!userText || busy) return;
+    setMessage("");
+    setChat((current) => [...current, { id: crypto.randomUUID(), role: "user", text: userText }]);
+    try {
+      const response = await fetch("/api/materials/organize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: userText, language }) });
+      if (!response.ok) throw new Error("素材整理失败");
+      const { material } = await response.json() as { material: Omit<HumorMaterial, "id" | "createdAt" | "updatedAt"> };
+      const now = new Date().toISOString();
+      const stored: HumorMaterial = { ...material, id: crypto.randomUUID(), createdAt: now, updatedAt: now };
+      await db.humorMaterials.put(stored);
+      await reload();
+      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: `已经替你整理为“${stored.title}”。我保留了原意，并标记了适合使用的场景和受众边界。` }]);
+      setNotice("灵感已经由对话整理并保存在本机素材库。");
+    } catch {
+      setChat((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: "这段灵感暂时没能整理，请稍后再说一次。" }]);
+    }
   };
-  return <div className="humor-layout"><section className="method-band"><div className="section-heading"><div><p className="section-label">方法卡</p><h2>把幽默当成可练习的表达能力</h2></div><p>以下方法为公开资料主题的转述，不复制书籍正文，也不模仿特定作者文风。</p></div><div className="method-grid">{HUMOR_METHODS.map((method) => <article className="method-card" key={method.id}><Lightbulb size={19} /><h3>{method.title[language]}</h3><p>{method.summary[language]}</p><strong>{method.exercise[language]}</strong></article>)}</div><div className="source-links"><span>合法公开来源：</span>{HUMOR_SOURCES.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.label}</a>)}</div></section><div className="humor-workspace"><form className="panel humor-form" onSubmit={submit}><div className="panel-head"><div><p className="section-label">个人素材库</p><h2>记录真实观察与故事</h2></div></div><label>类型<select value={type} onChange={(event) => setType(event.target.value as HumorMaterialType)}>{Object.entries(HUMOR_TYPE_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label>语言<select value={language} onChange={(event) => setLanguage(event.target.value as TrainingLanguage)}><option value="zh-CN">中文</option><option value="en-US">English</option></select></label><label>标题<input required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="一句能帮助你想起来的标题" /></label><label>素材<textarea required value={content} onChange={(event) => setContent(event.target.value)} placeholder="发生了什么？反差在哪里？你的真实感受是什么？" /></label><label>受众边界<textarea value={boundary} onChange={(event) => setBoundary(event.target.value)} /></label><button className="button primary"><Plus size={16} />保存素材</button></form><section className="panel material-list"><div className="panel-head"><div><p className="section-label">仅存本机</p><h2>{materials.length} 条个人素材</h2></div></div>{!materials.length && <div className="empty-copy">先记录，不急着写成笑话。真实细节往往比“造梗”更耐用。</div>}{materials.map((item) => <article className="material-row" key={item.id}><div><span>{HUMOR_TYPE_LABELS[item.type]} · {item.language === "en-US" ? "EN" : "中文"}</span><strong>{item.title}</strong><p>{item.content}</p><small>边界：{item.audienceBoundary}</small></div><button className="icon-button" title="删除素材" onClick={async () => { await db.humorMaterials.delete(item.id); await reload(); }}><Trash2 size={16} /></button></article>)}</section></div></div>;
+
+  return <div className="humor-layout">
+    <section className="material-sources" aria-label="素材导入方式">
+      <button onClick={openKnowledge}><Library size={22} /><strong>外部知识库</strong><span>连接飞书文档或 Wiki</span></button>
+      <label className={busy ? "disabled" : ""}><Upload size={22} /><strong>{busy ? "正在导入" : "上传文档"}</strong><span>DOCX、PDF、Markdown、TXT</span><input type="file" multiple accept=".docx,.pdf,.md,.txt" disabled={busy} onChange={(event) => void importFiles(event.target.files)} /></label>
+      <button disabled title="等待语音识别 API"><Mic size={22} /><strong>语音记录</strong><span>等待语音 API 接入</span></button>
+    </section>
+    <div className="humor-workspace">
+      <section className="panel coach-chat material-chat">
+        <div className="panel-head"><div><p className="section-label">灵感对话</p><h2>说出来，教练替你整理</h2></div><div className="segmented two language-mini"><button className={language === "zh-CN" ? "active" : ""} onClick={() => setLanguage("zh-CN")}>中文</button><button className={language === "en-US" ? "active" : ""} onClick={() => setLanguage("en-US")}>EN</button></div></div>
+        <div className="coach-chat-body">{chat.map((line) => <div key={line.id} className={`coach-message ${line.role}`}><span>{line.role === "assistant" ? "教练" : "你"}</span><p>{line.text}</p></div>)}</div>
+        <div className="chat-composer"><textarea aria-label="讲述灵感素材" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void organizeMaterial(); } }} placeholder="比如：今天开会时我发现，大家说要拥抱 AI，最后最忙的是复制粘贴的人..." /><button className="icon-button voice-coming" disabled title="等待语音识别 API"><Mic size={18} /></button><button className="icon-button send-button" title="发送并整理" disabled={!message.trim() || busy} onClick={() => void organizeMaterial()}><Send size={18} /></button></div>
+      </section>
+      <section className="panel material-list"><div className="panel-head"><div><p className="section-label">自动整理 · 仅存本机</p><h2>{materials.length} 条灵感素材</h2></div><span className="library-count">另有 {documents.length} 份知识资料</span></div>{!materials.length && <div className="empty-copy">这里没有需要填写的表单。讲一段经历或观察，教练会自动整理。</div>}{materials.map((item) => <article className="material-row" key={item.id}><div><span>{item.language === "en-US" ? "English" : "中文"}</span><strong>{item.title}</strong><p>{item.content}</p><small>边界：{item.audienceBoundary}</small></div><button className="icon-button" title="删除素材" onClick={async () => { await db.humorMaterials.delete(item.id); await reload(); }}><Trash2 size={16} /></button></article>)}</section>
+    </div>
+    <section className="method-band"><div className="section-heading"><div><p className="section-label">训练方法</p><h2>从灵感到可讲述的素材</h2></div><p>以下方法为公开资料主题的转述，不复制书籍正文，也不模仿特定作者文风。</p></div><div className="method-grid">{HUMOR_METHODS.map((method) => <article className="method-card" key={method.id}><Lightbulb size={19} /><h3>{method.title[language]}</h3><p>{method.summary[language]}</p><strong>{method.exercise[language]}</strong></article>)}</div><div className="source-links"><span>合法公开来源：</span>{HUMOR_SOURCES.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.label}</a>)}</div></section>
+  </div>;
 }
 
 function ReviewView({ latestSession, sessions, review, goals, selectRound, setActiveTab, setLatestSession, downloadRecording, deleteSession }: { latestSession: SessionRecord | null; sessions: SessionRecord[]; review: ReviewReport | null; goals: TrainingGoal[]; selectRound: (index: 1 | 2 | 3) => void; setActiveTab: (tab: AppTab) => void; setLatestSession: (session: SessionRecord) => void; downloadRecording: (session: SessionRecord) => void; deleteSession: (id: string) => Promise<void> }) {
@@ -715,14 +746,8 @@ function ReviewView({ latestSession, sessions, review, goals, selectRound, setAc
   return <div className="review-layout"><section className="review-main"><div className="panel review-summary"><div className="score-ring"><strong>{review?.overallScore ?? goal?.rounds.find((round) => round.sessionId === latestSession.id)?.score ?? "--"}</strong><span>本轮表现</span></div><div><p className="section-label">{latestSession.roundMode ? ROUND_LABELS[latestSession.roundMode] : "本轮结论"}</p><h2>{review?.summary ?? "选择一条记录查看本地指标。"}</h2><p>{new Date(latestSession.startedAt).toLocaleString("zh-CN")} · {formatTime(Math.round(latestSession.durationMs / 1000))}</p></div></div>{next && <div className="next-round-bar"><div><strong>本轮已完成</strong><span>下一轮不会自动开始，你可以先复盘或重新练习。</span></div><button className="button primary" onClick={() => selectRound(next)}>进入第 {next} 轮 <ArrowRight size={16} /></button></div>}{goal && <section className="panel round-comparison"><div className="panel-head"><div><p className="section-label">三轮对比</p><h2>同一目标的脱稿变化</h2></div></div><div className="comparison-grid">{([1, 2, 3] as const).map((index) => { const item = goalSessions.find((session) => session.roundIndex === index); const state = goal.rounds.find((round) => round.index === index); return <div key={index} className={item ? "complete" : ""}><span>第 {index} 轮 · {ROUND_LABELS[index === 1 ? "full" : index === 2 ? "cues" : "hidden"]}</span><strong>{state?.score ?? "--"}</strong><small>{item ? `${item.metrics.wordsPerMinute} ${item.language === "en-US" ? "wpm" : "字/分"} · 镜头 ${item.metrics.cameraFacingRatio}%` : "尚未练习"}</small></div>; })}</div></section>}{latestSession.videoBlob && <LocalVideo blob={latestSession.videoBlob} />}<div className="metrics-grid panel"><MetricCard label={latestSession.language === "en-US" ? "Words/min" : "语速"} value={latestSession.metrics.wordsPerMinute} suffix={latestSession.language === "en-US" ? "" : " 字/分"} /><MetricCard label="填充词" value={latestSession.metrics.fillerCount} /><MetricCard label="面向镜头" value={latestSession.metrics.cameraFacingRatio} suffix="%" /><MetricCard label="双手可见" value={latestSession.metrics.handsVisibleRatio} suffix="%" /><MetricCard label="手势活动" value={latestSession.metrics.gestureRate} suffix="%" /><MetricCard label="身体晃动" value={latestSession.metrics.bodySway} suffix="%" /></div><section className="panel timeline-panel"><div className="panel-head compact"><div><p className="section-label">表达时间轴</p><h2>音量与镜头连接</h2></div></div><MetricTimeline points={latestSession.metricTimeline} /></section>{review && <section className="panel feedback-grid"><div><p className="section-label positive">做得好的</p>{review.strengths.map((item) => <p key={item}>{item}</p>)}</div><div><p className="section-label caution">优先改进</p>{review.improvements.map((item) => <p key={item}>{item}</p>)}</div><div><p className="section-label action">下一轮练习</p>{review.nextPractice.map((item) => <p key={item}>{item}</p>)}</div></section>}</section><aside className="panel session-history"><p className="section-label">本地记录</p><h2>练习历史</h2>{sessions.map((session) => <div className={`session-row ${latestSession.id === session.id ? "active" : ""}`} key={session.id}><button onClick={() => setLatestSession(session)}><strong>{getScenario(session.scenarioId).title}{session.roundIndex ? ` · 第 ${session.roundIndex} 轮` : ""}</strong><span>{new Date(session.startedAt).toLocaleString("zh-CN")}</span></button><div><button title="下载录像" disabled={!session.videoBlob} onClick={() => downloadRecording(session)}><Download size={15} /></button><button title="永久删除" onClick={() => void deleteSession(session.id)}><Trash2 size={15} /></button></div></div>)}</aside></div>;
 }
 
-function OnboardingModal({ initial, onClose, onSave }: { initial: UserProfile; onClose: () => void; onSave: (profile: UserProfile) => Promise<void> }) {
-  const [role, setRole] = useState(initial.role);
-  const [industry, setIndustry] = useState(initial.industry);
-  const [experience, setExperience] = useState<UserProfile["experience"]>(initial.experience);
-  const [language, setLanguage] = useState<TrainingLanguage>(initial.languages[0] ?? "zh-CN");
-  const [primaryGoal, setPrimaryGoal] = useState(initial.primaryGoal);
-  const [preferredStyle, setPreferredStyle] = useState(initial.preferredStyle);
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="设置训练画像"><form className="onboarding-modal" onSubmit={(event) => { event.preventDefault(); void onSave({ id: "local-profile", role, industry, experience, languages: [language], primaryGoal, preferredStyle, onboardingComplete: true, updatedAt: new Date().toISOString() }); }}><button className="modal-close" type="button" title="跳过" onClick={onClose}><X size={18} /></button><p className="section-label">首次设置 · 只存本机</p><h2>你希望成为怎样的表达者？</h2><p>这些信息会帮助目标生成器选择场景、难度和反馈重点，之后可以随时修改。</p><div className="form-grid"><label>你的角色<input value={role} onChange={(event) => setRole(event.target.value)} placeholder="创始人 / 主持人 / 销售负责人" /></label><label>行业<input value={industry} onChange={(event) => setIndustry(event.target.value)} placeholder="AI / 消费 / 教育" /></label><label>经验<select value={experience} onChange={(event) => setExperience(event.target.value as UserProfile["experience"])}><option value="beginner">刚开始系统练习</option><option value="intermediate">有一些公开表达经验</option><option value="advanced">经常演讲或路演</option></select></label><label>常用语言<select value={language} onChange={(event) => setLanguage(event.target.value as TrainingLanguage)}><option value="zh-CN">中文</option><option value="en-US">English</option></select></label><label className="span-2">主要目标<textarea value={primaryGoal} onChange={(event) => setPrimaryGoal(event.target.value)} placeholder="例如：面对投资人时更清晰、更有说服力" /></label><label className="span-2">偏好风格<input value={preferredStyle} onChange={(event) => setPreferredStyle(event.target.value)} /></label></div><div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>暂时跳过</button><button className="button primary">保存并创建目标</button></div></form></div>;
+function OnboardingModal({ onClose, onStart }: { onClose: () => void; onStart: () => Promise<void> }) {
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="开始使用"><section className="onboarding-modal minimal"><button className="modal-close" type="button" title="跳过" onClick={onClose}><X size={18} /></button><div className="onboarding-symbol"><MessageCircle size={28} /></div><p className="section-label">不填画像 · 从对话开始</p><h2>把你要面对的那一刻，说给教练听</h2><p>不用设置角色、行业或成功标准。告诉我你准备在什么时候、面对谁、讲什么，我会在对话里逐步理解你，并自动整理成目标和三轮训练。</p><div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>暂时跳过</button><button className="button primary" onClick={() => void onStart()}><MessageCircle size={16} />开始对话</button></div></section></div>;
 }
 
 function LocalVideo({ blob }: { blob: Blob }) {
